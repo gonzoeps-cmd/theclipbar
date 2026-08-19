@@ -92,6 +92,7 @@ async function getRecentVideos(handleRaw, maxResults = 12) {
       null,
     publishedAt: v.snippet?.publishedAt,
     durationSeconds: isoDurationToSeconds(v.contentDetails?.duration),
+    viewCount: parseInt(v.statistics?.viewCount || '0', 10),
     url: `https://www.youtube.com/watch?v=${v.id}`,
     platform: 'youtube',
   }));
