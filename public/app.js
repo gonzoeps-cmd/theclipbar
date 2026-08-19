@@ -37,6 +37,47 @@ function formatDate(iso) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function embedUrlFor({ id, platform, kind }) {
+  const host = window.location.hostname;
+  if (platform === 'youtube') {
+    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1`;
+  }
+  if (kind === 'clip') {
+    return `https://clips.twitch.tv/embed?clip=${encodeURIComponent(id)}&parent=${host}&autoplay=true`;
+  }
+  return `https://player.twitch.tv/?video=${encodeURIComponent(id)}&parent=${host}&autoplay=true`;
+}
+
+function openPlayer(thumbWrap) {
+  document.querySelectorAll('.thumb-wrap.playing').forEach((el) => {
+    if (el !== thumbWrap) closePlayer(el);
+  });
+
+  const iframe = document.createElement('iframe');
+  iframe.className = 'player-iframe';
+  iframe.src = embedUrlFor(thumbWrap.dataset);
+  iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+  iframe.allowFullscreen = true;
+  iframe.frameBorder = '0';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'close-player-btn';
+  closeBtn.setAttribute('aria-label', 'Close player');
+  closeBtn.title = 'Close player';
+  closeBtn.textContent = '✕';
+
+  thumbWrap.appendChild(iframe);
+  thumbWrap.appendChild(closeBtn);
+  thumbWrap.classList.add('playing');
+}
+
+function closePlayer(thumbWrap) {
+  thumbWrap.classList.remove('playing');
+  thumbWrap.querySelector('.player-iframe')?.remove();
+  thumbWrap.querySelector('.close-player-btn')?.remove();
+}
+
 function formatViewCount(count) {
   if (!count && count !== 0) return null;
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count % 1_000_000 === 0 ? 0 : 1)}M views`;
@@ -100,10 +141,11 @@ function renderVideos(videos, emptyLabel) {
     const viewLabel = formatViewCount(video.viewCount);
     const metaParts = [formatDate(video.publishedAt), viewLabel].filter(Boolean);
     card.innerHTML = `
-      <div class="thumb-wrap">
+      <div class="thumb-wrap" data-id="${video.id}" data-platform="${video.platform}" data-kind="${video.kind || 'video'}">
         ${video.thumbnail ? `<img src="${video.thumbnail}" alt="${video.title}" loading="lazy" />` : ''}
         <span class="duration-badge">${formatDuration(video.durationSeconds)}</span>
         ${kindLabel ? `<span class="kind-badge">${kindLabel}</span>` : ''}
+        <button type="button" class="play-btn" aria-label="Play inline" title="Play here">&#9658;</button>
       </div>
       <div class="body">
         <div class="title">${video.title}</div>
@@ -173,23 +215,36 @@ async function copyToClipboard(text) {
 }
 
 results.addEventListener('click', async (e) => {
-  const btn = e.target.closest('.copy-btn');
-  if (!btn) return;
-  const url = btn.dataset.url;
-  try {
-    await copyToClipboard(url);
-    const original = btn.textContent;
-    btn.textContent = 'Copied!';
-    btn.classList.add('copied');
-    setTimeout(() => {
-      btn.textContent = original;
-      btn.classList.remove('copied');
-    }, 1500);
-  } catch (err) {
-    btn.textContent = 'Copy failed';
-    setTimeout(() => {
-      btn.textContent = 'Copy link';
-    }, 1500);
+  const copyBtn = e.target.closest('.copy-btn');
+  if (copyBtn) {
+    const url = copyBtn.dataset.url;
+    try {
+      await copyToClipboard(url);
+      const original = copyBtn.textContent;
+      copyBtn.textContent = 'Copied!';
+      copyBtn.classList.add('copied');
+      setTimeout(() => {
+        copyBtn.textContent = original;
+        copyBtn.classList.remove('copied');
+      }, 1500);
+    } catch (err) {
+      copyBtn.textContent = 'Copy failed';
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy link';
+      }, 1500);
+    }
+    return;
+  }
+
+  const closeBtn = e.target.closest('.close-player-btn');
+  if (closeBtn) {
+    closePlayer(closeBtn.closest('.thumb-wrap'));
+    return;
+  }
+
+  const thumbWrap = e.target.closest('.thumb-wrap');
+  if (thumbWrap && !thumbWrap.classList.contains('playing')) {
+    openPlayer(thumbWrap);
   }
 });
 
