@@ -27,6 +27,13 @@ function formatDate(iso) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function formatViewCount(count) {
+  if (!count && count !== 0) return null;
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(count % 1_000_000 === 0 ? 0 : 1)}M views`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(count % 1_000 === 0 ? 0 : 1)}K views`;
+  return `${count} view${count === 1 ? '' : 's'}`;
+}
+
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle('error', isError);
@@ -73,6 +80,8 @@ function renderVideos(videos, emptyLabel) {
     card.className = 'video-card';
     const platformLabel = video.platform === 'youtube' ? 'YouTube' : 'Twitch';
     const kindLabel = video.kind === 'clip' ? 'Clip' : video.platform === 'twitch' ? 'VOD' : '';
+    const viewLabel = formatViewCount(video.viewCount);
+    const metaParts = [formatDate(video.publishedAt), viewLabel].filter(Boolean);
     card.innerHTML = `
       <div class="thumb-wrap">
         ${video.thumbnail ? `<img src="${video.thumbnail}" alt="${video.title}" loading="lazy" />` : ''}
@@ -81,7 +90,7 @@ function renderVideos(videos, emptyLabel) {
       </div>
       <div class="body">
         <div class="title">${video.title}</div>
-        <div class="meta">${formatDate(video.publishedAt)}</div>
+        <div class="meta">${metaParts.join(' &middot; ')}</div>
         <a class="watch-link" href="${video.url}" target="_blank" rel="noopener">Watch on ${platformLabel} &rarr;</a>
       </div>
     `;
