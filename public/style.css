@@ -165,56 +165,105 @@ button:disabled { opacity: 0.6; cursor: default; }
   border-color: #f5c518;
 }
 
-.favorites-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.favorites-dropdown {
+  position: relative;
   margin: 14px 2px 0;
-  flex-wrap: wrap;
+  display: inline-block;
 }
 
-.favorites-label {
-  font-size: 0.8rem;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-
-.favorites-list {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.favorite-chip {
+.favorites-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 4px 10px 4px 4px;
   color: var(--text);
-  font-size: 0.82rem;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.88rem;
   cursor: pointer;
 }
 
-.favorite-chip:hover { border-color: var(--accent); }
+.favorites-toggle:hover { border-color: var(--accent); }
 
-.favorite-chip img {
-  width: 22px;
-  height: 22px;
+.favorites-toggle .favorites-count {
+  background: var(--accent);
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.favorites-toggle .caret {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.favorites-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.favorite-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.favorite-item:hover { background: rgba(255, 255, 255, 0.05); }
+
+.favorite-item img,
+.favorite-item-placeholder {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   object-fit: cover;
+  flex-shrink: 0;
+  background: #0d0f14;
 }
 
-.chip-remove {
+.favorite-item-name {
+  flex: 1;
+  font-size: 0.86rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.favorite-item-platform {
+  font-size: 0.72rem;
   color: var(--muted);
-  font-size: 0.95rem;
-  line-height: 1;
-  padding: 0 2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
 
-.chip-remove:hover { color: #ff6b6b; }
+.favorite-item-remove {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.favorite-item-remove:hover { color: #ff6b6b; }
 
 .channel-card img {
   width: 48px;
