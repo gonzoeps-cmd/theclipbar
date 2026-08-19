@@ -1,6 +1,6 @@
 # TheClipBar — Phase 1
 
-Paste a YouTube or Twitch channel handle, see recent videos/streams (title, thumbnail, duration, date).
+Paste a YouTube or Twitch channel handle, see recent videos/streams (title, thumbnail, duration, date). 
 
 ## Stack
 - Node.js + Express backend (`src/server.js`)
