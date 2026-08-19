@@ -69,15 +69,29 @@ function bestThumbnail(url, width = 320, height = 180) {
   return url.replace('%{width}', String(width)).replace('%{height}', String(height));
 }
 
-async function getRecentVideos(handleRaw, maxResults = 12) {
+async function resolveUser(handleRaw) {
   const login = handleRaw.trim().replace(/^@/, '').toLowerCase();
   const userData = await helixFetch(`/users?login=${encodeURIComponent(login)}`);
   const user = userData.data?.[0];
   if (!user) {
     throw new Error(`No Twitch channel found for "${handleRaw}"`);
   }
+  return user;
+}
 
-  // type=archive == past broadcasts (VODs), which is what we want for "recent streams".
+function formatChannel(user) {
+  return {
+    id: user.id,
+    title: user.display_name,
+    thumbnail: user.profile_image_url,
+    platform: 'twitch',
+  };
+}
+
+// type=archive == past broadcasts (VODs) — full-length streams.
+async function getRecentVideos(handleRaw, maxResults = 12) {
+  const user = await resolveUser(handleRaw);
+
   const videosData = await helixFetch(
     `/videos?user_id=${user.id}&first=${maxResults}&type=archive`
   );
@@ -90,17 +104,34 @@ async function getRecentVideos(handleRaw, maxResults = 12) {
     durationSeconds: twitchDurationToSeconds(v.duration),
     url: v.url,
     platform: 'twitch',
+    kind: 'video',
   }));
 
-  return {
-    channel: {
-      id: user.id,
-      title: user.display_name,
-      thumbnail: user.profile_image_url,
-      platform: 'twitch',
-    },
-    videos,
-  };
+  return { channel: formatChannel(user), videos };
 }
 
-module.exports = { getRecentVideos, twitchDurationToSeconds, getAppAccessToken };
+// Twitch's clips endpoint doesn't support pure recency sorting, so we scope to a recent
+// window (last 30 days) to keep results feeling "recent" rather than all-time top clips.
+async function getRecentClips(handleRaw, maxResults = 12) {
+  const user = await resolveUser(handleRaw);
+
+  const startedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const clipsData = await helixFetch(
+    `/clips?broadcaster_id=${user.id}&first=${maxResults}&started_at=${encodeURIComponent(startedAt)}`
+  );
+
+  const videos = (clipsData.data || []).map((c) => ({
+    id: c.id,
+    title: c.title,
+    thumbnail: c.thumbnail_url || null,
+    publishedAt: c.created_at,
+    durationSeconds: Math.round(c.duration || 0),
+    url: c.url,
+    platform: 'twitch',
+    kind: 'clip',
+  }));
+
+  return { channel: formatChannel(user), videos };
+}
+
+module.exports = { getRecentVideos, getRecentClips, twitchDurationToSeconds, getAppAccessToken };

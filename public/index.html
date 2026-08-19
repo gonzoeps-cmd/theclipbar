@@ -25,6 +25,13 @@
         <label for="handle">Channel handle / username</label>
         <input id="handle" name="handle" type="text" placeholder="e.g. @mkbhd or shroud" autocomplete="off" required />
       </div>
+      <div class="field twitch-type-field hidden" id="twitch-type-field">
+        <label>Twitch content</label>
+        <div class="segmented" id="twitch-type" role="radiogroup" aria-label="Twitch content type">
+          <button type="button" class="segmented-btn active" data-type="videos" role="radio" aria-checked="true">Videos</button>
+          <button type="button" class="segmented-btn" data-type="clips" role="radio" aria-checked="false">Clips</button>
+        </div>
+      </div>
       <button type="submit" id="submit-btn">Look up</button>
     </form>
 

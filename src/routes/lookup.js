@@ -5,7 +5,7 @@ const twitch = require('../services/twitch');
 const router = express.Router();
 
 router.get('/lookup', async (req, res) => {
-  const { platform, handle } = req.query;
+  const { platform, handle, type } = req.query;
 
   if (!platform || !handle) {
     return res.status(400).json({ error: 'Both "platform" and "handle" query params are required.' });
@@ -17,12 +17,20 @@ router.get('/lookup', async (req, res) => {
     return res.status(400).json({ error: 'handle cannot be empty.' });
   }
 
+  // For Twitch, "type" picks between full VODs ("videos", the default) and short clips ("clips").
+  // Ignored for YouTube, which only has one kind of result.
+  const twitchType = type === 'clips' ? 'clips' : 'videos';
+
   try {
-    const result =
-      platform === 'youtube'
-        ? await youtube.getRecentVideos(handle)
-        : await twitch.getRecentVideos(handle);
-    res.json(result);
+    let result;
+    if (platform === 'youtube') {
+      result = await youtube.getRecentVideos(handle);
+    } else if (twitchType === 'clips') {
+      result = await twitch.getRecentClips(handle);
+    } else {
+      result = await twitch.getRecentVideos(handle);
+    }
+    res.json({ ...result, type: platform === 'twitch' ? twitchType : 'videos' });
   } catch (err) {
     console.error(`[lookup] ${platform} "${handle}" failed:`, err.message);
     res.status(502).json({ error: err.message || 'Lookup failed.' });
