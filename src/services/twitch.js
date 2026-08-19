@@ -89,11 +89,12 @@ function formatChannel(user) {
 }
 
 // type=archive == past broadcasts (VODs) — full-length streams.
-async function getRecentVideos(handleRaw, maxResults = 12) {
+async function getRecentVideos(handleRaw, maxResults = 12, after = null) {
   const user = await resolveUser(handleRaw);
 
+  const afterParam = after ? `&after=${encodeURIComponent(after)}` : '';
   const videosData = await helixFetch(
-    `/videos?user_id=${user.id}&first=${maxResults}&type=archive`
+    `/videos?user_id=${user.id}&first=${maxResults}&type=archive${afterParam}`
   );
 
   const videos = (videosData.data || []).map((v) => ({
@@ -108,7 +109,7 @@ async function getRecentVideos(handleRaw, maxResults = 12) {
     kind: 'video',
   }));
 
-  return { channel: formatChannel(user), videos };
+  return { channel: formatChannel(user), videos, nextPage: videosData.pagination?.cursor || null };
 }
 
 // Twitch's clips endpoint doesn't support pure recency sorting. When a range is given we
@@ -120,30 +121,41 @@ const CLIP_RANGE_MS = {
   '30d': 30 * 24 * 60 * 60 * 1000,
 };
 
-async function getRecentClips(handleRaw, maxResults = 12, rangeKey = '30d') {
+async function getRecentClips(handleRaw, maxResults = 12, rangeKey = '30d', offset = 0) {
   const user = await resolveUser(handleRaw);
 
   const rangeMs = CLIP_RANGE_MS[rangeKey];
   const startedAtParam = rangeMs
     ? `&started_at=${encodeURIComponent(new Date(Date.now() - rangeMs).toISOString())}`
     : '';
+  // Twitch's /clips endpoint always sorts by view count (trending), never by date — even
+  // inside a started_at window. So we over-fetch its max page (100) and sort/paginate
+  // ourselves to actually get the *most recent* clips, not just the most-viewed. This caps
+  // us at the 100 most-viewed clips in the chosen window — a channel with more than 100
+  // clips there may have older ones beyond this pool that "Load more" can't reach.
   const clipsData = await helixFetch(
-    `/clips?broadcaster_id=${user.id}&first=${maxResults}${startedAtParam}`
+    `/clips?broadcaster_id=${user.id}&first=100${startedAtParam}`
   );
 
-  const videos = (clipsData.data || []).map((c) => ({
-    id: c.id,
-    title: c.title,
-    thumbnail: c.thumbnail_url || null,
-    publishedAt: c.created_at,
-    durationSeconds: Math.round(c.duration || 0),
-    viewCount: c.view_count || 0,
-    url: c.url,
-    platform: 'twitch',
-    kind: 'clip',
-  }));
+  const allVideos = (clipsData.data || [])
+    .map((c) => ({
+      id: c.id,
+      title: c.title,
+      thumbnail: c.thumbnail_url || null,
+      publishedAt: c.created_at,
+      durationSeconds: Math.round(c.duration || 0),
+      viewCount: c.view_count || 0,
+      url: c.url,
+      platform: 'twitch',
+      kind: 'clip',
+    }))
+    .sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
 
-  return { channel: formatChannel(user), videos };
+  const videos = allVideos.slice(offset, offset + maxResults);
+  const nextOffset = offset + maxResults;
+  const nextPage = nextOffset < allVideos.length ? String(nextOffset) : null;
+
+  return { channel: formatChannel(user), videos, nextPage };
 }
 
 module.exports = { getRecentVideos, getRecentClips, twitchDurationToSeconds, getAppAccessToken, CLIP_RANGE_MS };
