@@ -21,6 +21,72 @@ let twitchType = 'videos'; // 'videos' (VODs) or 'clips'
 let clipRange = clipRangeSelect.value; // 'all' | '30d' | '7d' | '24h', clips only
 let lastLookup = null; // { platform, handle } of the most recent successful lookup
 
+const FAVORITES_KEY = 'theclipbar_favorites';
+
+function favoriteKey(platform, handle) {
+  return `${platform}:${(handle || '').trim().toLowerCase().replace(/^@/, '')}`;
+}
+
+function getFavorites() {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFavoritesList(list) {
+  try {
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify(list));
+  } catch {
+    // localStorage unavailable (e.g. private browsing) — favorites just won't persist.
+  }
+}
+
+function isFavorite(platform, handle) {
+  const key = favoriteKey(platform, handle);
+  return getFavorites().some((f) => favoriteKey(f.platform, f.handle) === key);
+}
+
+function addFavorite({ platform, handle, title, thumbnail }) {
+  const favs = getFavorites();
+  const key = favoriteKey(platform, handle);
+  if (favs.some((f) => favoriteKey(f.platform, f.handle) === key)) return;
+  favs.unshift({ platform, handle, title, thumbnail });
+  saveFavoritesList(favs);
+  renderFavoritesBar();
+}
+
+function removeFavorite(platform, handle) {
+  const key = favoriteKey(platform, handle);
+  saveFavoritesList(getFavorites().filter((f) => favoriteKey(f.platform, f.handle) !== key));
+  renderFavoritesBar();
+}
+
+function renderFavoritesBar() {
+  const favs = getFavorites();
+  const bar = document.getElementById('favorites-bar');
+  const list = document.getElementById('favorites-list');
+  if (!favs.length) {
+    bar.classList.add('hidden');
+    list.innerHTML = '';
+    return;
+  }
+  bar.classList.remove('hidden');
+  list.innerHTML = favs
+    .map(
+      (f) => `
+    <button type="button" class="favorite-chip" data-platform="${f.platform}" data-handle="${f.handle}">
+      ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : ''}
+      <span class="chip-name">${f.title || f.handle}</span>
+      <span class="chip-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites">&times;</span>
+    </button>
+  `
+    )
+    .join('');
+}
+
 function formatDuration(totalSeconds) {
   if (!totalSeconds || totalSeconds <= 0) return '--:--';
   const h = Math.floor(totalSeconds / 3600);
@@ -111,19 +177,29 @@ function setTwitchType(nextType) {
   updateClipRangeVisibility();
 }
 
-function renderChannel(channel) {
+function renderChannel(channel, platform, handle) {
   if (!channel) {
     channelCard.classList.add('hidden');
     channelCard.innerHTML = '';
     return;
   }
   channelCard.classList.remove('hidden');
+  const fav = isFavorite(platform, handle);
   channelCard.innerHTML = `
     ${channel.thumbnail ? `<img src="${channel.thumbnail}" alt="${channel.title}" />` : ''}
-    <div>
+    <div class="channel-info">
       <div style="font-weight:600;">${channel.title || 'Unknown channel'}</div>
       <div style="color:var(--muted); font-size:0.82rem; text-transform:capitalize;">${channel.platform}</div>
     </div>
+    <button
+      type="button"
+      class="fav-btn ${fav ? 'active' : ''}"
+      data-platform="${platform}"
+      data-handle="${handle}"
+      data-title="${channel.title || handle}"
+      data-thumbnail="${channel.thumbnail || ''}"
+      title="${fav ? 'Remove from favorites' : 'Save to favorites'}"
+    >${fav ? '★ Saved' : '☆ Save'}</button>
   `;
 }
 
@@ -182,7 +258,7 @@ async function runLookup(platform, handle) {
     if (!res.ok) {
       throw new Error(data.error || 'Lookup failed.');
     }
-    renderChannel(data.channel);
+    renderChannel(data.channel, platform, handle);
     const emptyLabel = isClips
       ? `No clips found (${rangeLabel}).`
       : 'No recent videos found.';
@@ -248,6 +324,39 @@ results.addEventListener('click', async (e) => {
   }
 });
 
+channelCard.addEventListener('click', (e) => {
+  const btn = e.target.closest('.fav-btn');
+  if (!btn) return;
+  const { platform, handle, title, thumbnail } = btn.dataset;
+  if (isFavorite(platform, handle)) {
+    removeFavorite(platform, handle);
+    btn.classList.remove('active');
+    btn.textContent = '☆ Save';
+    btn.title = 'Save to favorites';
+  } else {
+    addFavorite({ platform, handle, title, thumbnail });
+    btn.classList.add('active');
+    btn.textContent = '★ Saved';
+    btn.title = 'Remove from favorites';
+  }
+});
+
+document.getElementById('favorites-list').addEventListener('click', (e) => {
+  const removeEl = e.target.closest('.chip-remove');
+  if (removeEl) {
+    removeFavorite(removeEl.dataset.platform, removeEl.dataset.handle);
+    return;
+  }
+  const chip = e.target.closest('.favorite-chip');
+  if (chip) {
+    const { platform, handle } = chip.dataset;
+    platformSelect.value = platform;
+    handleInput.value = handle;
+    updateTwitchFieldVisibility();
+    runLookup(platform, handle);
+  }
+});
+
 platformSelect.addEventListener('change', updateTwitchFieldVisibility);
 
 twitchTypeButtons.forEach((btn) => {
@@ -279,3 +388,4 @@ form.addEventListener('submit', (e) => {
 });
 
 updateTwitchFieldVisibility();
+renderFavoritesBar();
