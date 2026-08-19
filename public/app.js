@@ -7,8 +7,18 @@ const platformSelect = document.getElementById('platform');
 const handleInput = document.getElementById('handle');
 const twitchTypeField = document.getElementById('twitch-type-field');
 const twitchTypeButtons = document.querySelectorAll('#twitch-type .segmented-btn');
+const clipRangeField = document.getElementById('clip-range-field');
+const clipRangeSelect = document.getElementById('clip-range');
+
+const CLIP_RANGE_LABELS = {
+  all: 'all time',
+  '30d': 'last 30 days',
+  '7d': 'last 7 days',
+  '24h': 'last 24 hours',
+};
 
 let twitchType = 'videos'; // 'videos' (VODs) or 'clips'
+let clipRange = clipRangeSelect.value; // 'all' | '30d' | '7d' | '24h', clips only
 let lastLookup = null; // { platform, handle } of the most recent successful lookup
 
 function formatDuration(totalSeconds) {
@@ -42,6 +52,12 @@ function setStatus(message, isError = false) {
 function updateTwitchFieldVisibility() {
   const isTwitch = platformSelect.value === 'twitch';
   twitchTypeField.classList.toggle('hidden', !isTwitch);
+  updateClipRangeVisibility();
+}
+
+function updateClipRangeVisibility() {
+  const showClipRange = platformSelect.value === 'twitch' && twitchType === 'clips';
+  clipRangeField.classList.toggle('hidden', !showClipRange);
 }
 
 function setTwitchType(nextType) {
@@ -51,6 +67,7 @@ function setTwitchType(nextType) {
     btn.classList.toggle('active', isActive);
     btn.setAttribute('aria-checked', String(isActive));
   });
+  updateClipRangeVisibility();
 }
 
 function renderChannel(channel) {
@@ -105,13 +122,18 @@ async function runLookup(platform, handle) {
   submitBtn.disabled = true;
   renderChannel(null);
   results.innerHTML = '';
-  const noun = platform === 'twitch' && twitchType === 'clips' ? 'clips' : platform === 'twitch' ? 'streams' : 'videos';
-  setStatus(`Looking up ${noun}...`);
+  const isClips = platform === 'twitch' && twitchType === 'clips';
+  const noun = isClips ? 'clips' : platform === 'twitch' ? 'streams' : 'videos';
+  const rangeLabel = isClips ? CLIP_RANGE_LABELS[clipRange] : '';
+  setStatus(`Looking up ${noun}${rangeLabel ? ` (${rangeLabel})` : ''}...`);
 
   try {
     const params = new URLSearchParams({ platform, handle });
     if (platform === 'twitch') {
       params.set('type', twitchType);
+      if (isClips) {
+        params.set('range', clipRange);
+      }
     }
     const res = await fetch(`/api/lookup?${params.toString()}`);
     const data = await res.json();
@@ -119,12 +141,13 @@ async function runLookup(platform, handle) {
       throw new Error(data.error || 'Lookup failed.');
     }
     renderChannel(data.channel);
-    const emptyLabel = platform === 'twitch' && twitchType === 'clips'
-      ? 'No recent clips found (looked back 30 days).'
+    const emptyLabel = isClips
+      ? `No clips found (${rangeLabel}).`
       : 'No recent videos found.';
     renderVideos(data.videos || [], emptyLabel);
     const count = data.videos?.length || 0;
-    setStatus(`Found ${count} recent ${noun === 'clips' ? (count === 1 ? 'clip' : 'clips') : count === 1 ? noun.slice(0, -1) : noun}.`);
+    const countNoun = noun === 'clips' ? (count === 1 ? 'clip' : 'clips') : count === 1 ? noun.slice(0, -1) : noun;
+    setStatus(`Found ${count} ${countNoun}${rangeLabel ? ` (${rangeLabel})` : ''}.`);
     lastLookup = { platform, handle };
   } catch (err) {
     setStatus(err.message, true);
@@ -182,6 +205,14 @@ twitchTypeButtons.forEach((btn) => {
       runLookup('twitch', lastLookup.handle);
     }
   });
+});
+
+clipRangeSelect.addEventListener('change', () => {
+  clipRange = clipRangeSelect.value;
+  // Refresh immediately if we're already looking at Twitch clips.
+  if (lastLookup && lastLookup.platform === 'twitch' && twitchType === 'clips') {
+    runLookup('twitch', lastLookup.handle);
+  }
 });
 
 form.addEventListener('submit', (e) => {
