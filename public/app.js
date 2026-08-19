@@ -17,9 +17,13 @@ const CLIP_RANGE_LABELS = {
   '24h': 'last 24 hours',
 };
 
+const loadMoreBtn = document.getElementById('load-more-btn');
+
 let twitchType = 'videos'; // 'videos' (VODs) or 'clips'
 let clipRange = clipRangeSelect.value; // 'all' | '30d' | '7d' | '24h', clips only
 let lastLookup = null; // { platform, handle } of the most recent successful lookup
+let nextPage = null; // opaque page token/cursor/offset for "Load more", or null if no more
+let loadMoreLoading = false;
 
 const FAVORITES_KEY = 'theclipbar_favorites';
 
@@ -227,36 +231,42 @@ function renderChannel(channel, platform, handle) {
   `;
 }
 
-function renderVideos(videos, emptyLabel) {
-  results.innerHTML = '';
-  if (!videos.length) {
-    results.innerHTML = `<p style="color:var(--muted);">${emptyLabel}</p>`;
-    return;
+function buildVideoCard(video) {
+  const card = document.createElement('article');
+  card.className = 'video-card';
+  const platformLabel = video.platform === 'youtube' ? 'YouTube' : 'Twitch';
+  const kindLabel = video.kind === 'clip' ? 'Clip' : video.platform === 'twitch' ? 'VOD' : '';
+  const viewLabel = formatViewCount(video.viewCount);
+  const metaParts = [formatDate(video.publishedAt), viewLabel].filter(Boolean);
+  card.innerHTML = `
+    <div class="thumb-wrap" data-id="${video.id}" data-platform="${video.platform}" data-kind="${video.kind || 'video'}">
+      ${video.thumbnail ? `<img src="${video.thumbnail}" alt="${video.title}" loading="lazy" />` : ''}
+      <span class="duration-badge">${formatDuration(video.durationSeconds)}</span>
+      ${kindLabel ? `<span class="kind-badge">${kindLabel}</span>` : ''}
+      <button type="button" class="play-btn" aria-label="Play inline" title="Play here">&#9658;</button>
+    </div>
+    <div class="body">
+      <div class="title">${video.title}</div>
+      <div class="meta">${metaParts.join(' &middot; ')}</div>
+      <div class="link-row">
+        <a class="watch-link" href="${video.url}" target="_blank" rel="noopener">Watch on ${platformLabel} &rarr;</a>
+        <button type="button" class="copy-btn" data-url="${video.url}" title="Copy link">Copy link</button>
+      </div>
+    </div>
+  `;
+  return card;
+}
+
+function renderVideos(videos, emptyLabel, { append = false } = {}) {
+  if (!append) {
+    results.innerHTML = '';
+    if (!videos.length) {
+      results.innerHTML = `<p style="color:var(--muted);">${emptyLabel}</p>`;
+      return;
+    }
   }
   for (const video of videos) {
-    const card = document.createElement('article');
-    card.className = 'video-card';
-    const platformLabel = video.platform === 'youtube' ? 'YouTube' : 'Twitch';
-    const kindLabel = video.kind === 'clip' ? 'Clip' : video.platform === 'twitch' ? 'VOD' : '';
-    const viewLabel = formatViewCount(video.viewCount);
-    const metaParts = [formatDate(video.publishedAt), viewLabel].filter(Boolean);
-    card.innerHTML = `
-      <div class="thumb-wrap" data-id="${video.id}" data-platform="${video.platform}" data-kind="${video.kind || 'video'}">
-        ${video.thumbnail ? `<img src="${video.thumbnail}" alt="${video.title}" loading="lazy" />` : ''}
-        <span class="duration-badge">${formatDuration(video.durationSeconds)}</span>
-        ${kindLabel ? `<span class="kind-badge">${kindLabel}</span>` : ''}
-        <button type="button" class="play-btn" aria-label="Play inline" title="Play here">&#9658;</button>
-      </div>
-      <div class="body">
-        <div class="title">${video.title}</div>
-        <div class="meta">${metaParts.join(' &middot; ')}</div>
-        <div class="link-row">
-          <a class="watch-link" href="${video.url}" target="_blank" rel="noopener">Watch on ${platformLabel} &rarr;</a>
-          <button type="button" class="copy-btn" data-url="${video.url}" title="Copy link">Copy link</button>
-        </div>
-      </div>
-    `;
-    results.appendChild(card);
+    results.appendChild(buildVideoCard(video));
   }
 }
 
@@ -264,6 +274,8 @@ async function runLookup(platform, handle) {
   submitBtn.disabled = true;
   renderChannel(null);
   results.innerHTML = '';
+  nextPage = null;
+  loadMoreBtn.classList.add('hidden');
   const isClips = platform === 'twitch' && twitchType === 'clips';
   const noun = isClips ? 'clips' : platform === 'twitch' ? 'streams' : 'videos';
   const rangeLabel = isClips ? CLIP_RANGE_LABELS[clipRange] : '';
@@ -291,10 +303,45 @@ async function runLookup(platform, handle) {
     const countNoun = noun === 'clips' ? (count === 1 ? 'clip' : 'clips') : count === 1 ? noun.slice(0, -1) : noun;
     setStatus(`Found ${count} ${countNoun}${rangeLabel ? ` (${rangeLabel})` : ''}.`);
     lastLookup = { platform, handle };
+    nextPage = data.nextPage || null;
+    loadMoreBtn.classList.toggle('hidden', !nextPage);
   } catch (err) {
     setStatus(err.message, true);
   } finally {
     submitBtn.disabled = false;
+  }
+}
+
+async function loadMore() {
+  if (!lastLookup || !nextPage || loadMoreLoading) return;
+  loadMoreLoading = true;
+  loadMoreBtn.disabled = true;
+  loadMoreBtn.textContent = 'Loading...';
+
+  try {
+    const { platform, handle } = lastLookup;
+    const isClips = platform === 'twitch' && twitchType === 'clips';
+    const params = new URLSearchParams({ platform, handle, page: nextPage });
+    if (platform === 'twitch') {
+      params.set('type', twitchType);
+      if (isClips) {
+        params.set('range', clipRange);
+      }
+    }
+    const res = await fetch(`/api/lookup?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to load more.');
+    }
+    renderVideos(data.videos || [], '', { append: true });
+    nextPage = data.nextPage || null;
+    loadMoreBtn.classList.toggle('hidden', !nextPage);
+  } catch (err) {
+    setStatus(err.message, true);
+  } finally {
+    loadMoreLoading = false;
+    loadMoreBtn.disabled = false;
+    loadMoreBtn.textContent = 'Load more';
   }
 }
 
@@ -393,6 +440,8 @@ document.addEventListener('click', (e) => {
     closeFavoritesMenu();
   }
 });
+
+loadMoreBtn.addEventListener('click', loadMore);
 
 platformSelect.addEventListener('change', updateTwitchFieldVisibility);
 
