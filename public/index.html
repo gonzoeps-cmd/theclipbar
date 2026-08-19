@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TheClipBar</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>TheClipBar</h1>
+    <p class="tagline">Paste a channel handle, find recent videos, clip the good parts.</p>
+  </header>
+
+  <main>
+    <form id="lookup-form" class="lookup-form">
+      <div class="field">
+        <label for="platform">Platform</label>
+        <select id="platform" name="platform">
+          <option value="youtube">YouTube</option>
+          <option value="twitch">Twitch</option>
+        </select>
+      </div>
+      <div class="field field-grow">
+        <label for="handle">Channel handle / username</label>
+        <input id="handle" name="handle" type="text" placeholder="e.g. @mkbhd or shroud" autocomplete="off" required />
+      </div>
+      <button type="submit" id="submit-btn">Look up</button>
+    </form>
+
+    <div id="status" class="status" role="status"></div>
+
+    <section id="channel-card" class="channel-card hidden"></section>
+
+    <section id="results" class="results"></section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
