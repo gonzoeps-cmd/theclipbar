@@ -111,14 +111,24 @@ async function getRecentVideos(handleRaw, maxResults = 12) {
   return { channel: formatChannel(user), videos };
 }
 
-// Twitch's clips endpoint doesn't support pure recency sorting, so we scope to a recent
-// window (last 30 days) to keep results feeling "recent" rather than all-time top clips.
-async function getRecentClips(handleRaw, maxResults = 12) {
+// Twitch's clips endpoint doesn't support pure recency sorting. When a range is given we
+// scope to that window (via started_at) to keep results feeling "recent"; "all" skips the
+// window entirely and falls back to Twitch's all-time top clips.
+const CLIP_RANGE_MS = {
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+};
+
+async function getRecentClips(handleRaw, maxResults = 12, rangeKey = '30d') {
   const user = await resolveUser(handleRaw);
 
-  const startedAt = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const rangeMs = CLIP_RANGE_MS[rangeKey];
+  const startedAtParam = rangeMs
+    ? `&started_at=${encodeURIComponent(new Date(Date.now() - rangeMs).toISOString())}`
+    : '';
   const clipsData = await helixFetch(
-    `/clips?broadcaster_id=${user.id}&first=${maxResults}&started_at=${encodeURIComponent(startedAt)}`
+    `/clips?broadcaster_id=${user.id}&first=${maxResults}${startedAtParam}`
   );
 
   const videos = (clipsData.data || []).map((c) => ({
@@ -136,4 +146,4 @@ async function getRecentClips(handleRaw, maxResults = 12) {
   return { channel: formatChannel(user), videos };
 }
 
-module.exports = { getRecentVideos, getRecentClips, twitchDurationToSeconds, getAppAccessToken };
+module.exports = { getRecentVideos, getRecentClips, twitchDurationToSeconds, getAppAccessToken, CLIP_RANGE_MS };
