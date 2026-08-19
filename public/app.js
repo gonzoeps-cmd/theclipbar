@@ -55,33 +55,57 @@ function addFavorite({ platform, handle, title, thumbnail }) {
   if (favs.some((f) => favoriteKey(f.platform, f.handle) === key)) return;
   favs.unshift({ platform, handle, title, thumbnail });
   saveFavoritesList(favs);
-  renderFavoritesBar();
+  renderFavorites();
 }
 
 function removeFavorite(platform, handle) {
   const key = favoriteKey(platform, handle);
   saveFavoritesList(getFavorites().filter((f) => favoriteKey(f.platform, f.handle) !== key));
-  renderFavoritesBar();
+  renderFavorites();
 }
 
-function renderFavoritesBar() {
+const favoritesDropdown = document.getElementById('favorites-dropdown');
+const favoritesToggle = document.getElementById('favorites-toggle');
+const favoritesMenu = document.getElementById('favorites-menu');
+const favoritesCount = document.getElementById('favorites-count');
+
+function openFavoritesMenu() {
+  favoritesMenu.classList.remove('hidden');
+  favoritesToggle.setAttribute('aria-expanded', 'true');
+}
+
+function closeFavoritesMenu() {
+  favoritesMenu.classList.add('hidden');
+  favoritesToggle.setAttribute('aria-expanded', 'false');
+}
+
+function toggleFavoritesMenu() {
+  if (favoritesMenu.classList.contains('hidden')) {
+    openFavoritesMenu();
+  } else {
+    closeFavoritesMenu();
+  }
+}
+
+function renderFavorites() {
   const favs = getFavorites();
-  const bar = document.getElementById('favorites-bar');
-  const list = document.getElementById('favorites-list');
   if (!favs.length) {
-    bar.classList.add('hidden');
-    list.innerHTML = '';
+    favoritesDropdown.classList.add('hidden');
+    closeFavoritesMenu();
+    favoritesMenu.innerHTML = '';
     return;
   }
-  bar.classList.remove('hidden');
-  list.innerHTML = favs
+  favoritesDropdown.classList.remove('hidden');
+  favoritesCount.textContent = String(favs.length);
+  favoritesMenu.innerHTML = favs
     .map(
       (f) => `
-    <button type="button" class="favorite-chip" data-platform="${f.platform}" data-handle="${f.handle}">
-      ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : ''}
-      <span class="chip-name">${f.title || f.handle}</span>
-      <span class="chip-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites">&times;</span>
-    </button>
+    <div class="favorite-item" data-platform="${f.platform}" data-handle="${f.handle}">
+      ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : `<span class="favorite-item-placeholder"></span>`}
+      <span class="favorite-item-name">${f.title || f.handle}</span>
+      <span class="favorite-item-platform">${f.platform === 'youtube' ? 'YouTube' : 'Twitch'}</span>
+      <button type="button" class="favorite-item-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites" aria-label="Remove from favorites">&times;</button>
+    </div>
   `
     )
     .join('');
@@ -341,19 +365,32 @@ channelCard.addEventListener('click', (e) => {
   }
 });
 
-document.getElementById('favorites-list').addEventListener('click', (e) => {
-  const removeEl = e.target.closest('.chip-remove');
-  if (removeEl) {
-    removeFavorite(removeEl.dataset.platform, removeEl.dataset.handle);
+favoritesToggle.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleFavoritesMenu();
+});
+
+favoritesMenu.addEventListener('click', (e) => {
+  const removeBtn = e.target.closest('.favorite-item-remove');
+  if (removeBtn) {
+    e.stopPropagation();
+    removeFavorite(removeBtn.dataset.platform, removeBtn.dataset.handle);
     return;
   }
-  const chip = e.target.closest('.favorite-chip');
-  if (chip) {
-    const { platform, handle } = chip.dataset;
+  const item = e.target.closest('.favorite-item');
+  if (item) {
+    const { platform, handle } = item.dataset;
     platformSelect.value = platform;
     handleInput.value = handle;
     updateTwitchFieldVisibility();
+    closeFavoritesMenu();
     runLookup(platform, handle);
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!favoritesDropdown.contains(e.target)) {
+    closeFavoritesMenu();
   }
 });
 
@@ -388,4 +425,4 @@ form.addEventListener('submit', (e) => {
 });
 
 updateTwitchFieldVisibility();
-renderFavoritesBar();
+renderFavorites();
