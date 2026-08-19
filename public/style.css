@@ -427,3 +427,18 @@ button:disabled { opacity: 0.6; cursor: default; }
   color: var(--accent);
   border-color: var(--accent);
 }
+
+.load-more-btn {
+  display: block;
+  margin: 24px auto 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 28px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.load-more-btn:hover { border-color: var(--accent); color: var(--accent); }
+.load-more-btn:disabled { opacity: 0.6; cursor: default; }
