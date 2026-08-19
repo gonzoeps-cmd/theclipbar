@@ -29,29 +29,38 @@ async function fetchJson(url) {
 // with contentDetails (needed for the uploads playlist id).
 async function resolveChannel(handleRaw) {
   const key = apiKey();
-  const cleanHandle = handleRaw.trim().replace(/^@/, '');
+  const trimmed = handleRaw.trim();
+  // Only trust exact handle/username lookups when the person actually typed "@something" —
+  // that's an unambiguous real handle. A bare name like "AMP" is a search term, not a handle,
+  // and matching it against forHandle can land on a totally unrelated channel that happens to
+  // own that literal handle instead of the popular channel the person meant.
+  const isExplicitHandle = trimmed.startsWith('@');
+  const cleanHandle = trimmed.replace(/^@/, '');
 
-  // 1) Try the modern handle lookup.
-  let data = await fetchJson(
-    `${API_BASE}/channels?part=id,snippet,contentDetails&forHandle=${encodeURIComponent(cleanHandle)}&key=${key}`
-  );
-  if (data.items?.length) return data.items[0];
+  if (isExplicitHandle) {
+    // 1) Modern handle lookup.
+    let data = await fetchJson(
+      `${API_BASE}/channels?part=id,snippet,contentDetails&forHandle=${encodeURIComponent(cleanHandle)}&key=${key}`
+    );
+    if (data.items?.length) return data.items[0];
 
-  // 2) Fall back to legacy username lookup.
-  data = await fetchJson(
-    `${API_BASE}/channels?part=id,snippet,contentDetails&forUsername=${encodeURIComponent(cleanHandle)}&key=${key}`
-  );
-  if (data.items?.length) return data.items[0];
+    // 2) Legacy username lookup.
+    data = await fetchJson(
+      `${API_BASE}/channels?part=id,snippet,contentDetails&forUsername=${encodeURIComponent(cleanHandle)}&key=${key}`
+    );
+    if (data.items?.length) return data.items[0];
+  }
 
-  // 3) Fall back to a general search (handles typos / display names).
-  data = await fetchJson(
+  // 3) Relevance-ranked search — the default for plain names, and the fallback if an
+  // explicit handle/username didn't match anything.
+  const searchData = await fetchJson(
     `${API_BASE}/search?part=snippet&type=channel&maxResults=1&q=${encodeURIComponent(cleanHandle)}&key=${key}`
   );
-  const channelId = data.items?.[0]?.snippet?.channelId;
+  const channelId = searchData.items?.[0]?.snippet?.channelId;
   if (!channelId) {
     throw new Error(`No YouTube channel found for "${handleRaw}"`);
   }
-  data = await fetchJson(
+  const data = await fetchJson(
     `${API_BASE}/channels?part=id,snippet,contentDetails&id=${channelId}&key=${key}`
   );
   if (!data.items?.length) {
@@ -60,7 +69,7 @@ async function resolveChannel(handleRaw) {
   return data.items[0];
 }
 
-async function getRecentVideos(handleRaw, maxResults = 12) {
+async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null) {
   const key = apiKey();
   const channel = await resolveChannel(handleRaw);
   const uploadsPlaylistId = channel.contentDetails?.relatedPlaylists?.uploads;
@@ -68,15 +77,16 @@ async function getRecentVideos(handleRaw, maxResults = 12) {
     throw new Error('Could not find an uploads playlist for this channel');
   }
 
+  const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
   const playlistData = await fetchJson(
-    `${API_BASE}/playlistItems?part=contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${maxResults}&key=${key}`
+    `${API_BASE}/playlistItems?part=contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${maxResults}${pageParam}&key=${key}`
   );
   const videoIds = (playlistData.items || [])
     .map((item) => item.contentDetails?.videoId)
     .filter(Boolean);
 
   if (!videoIds.length) {
-    return { channel: formatChannel(channel), videos: [] };
+    return { channel: formatChannel(channel), videos: [], nextPage: null };
   }
 
   const videosData = await fetchJson(
@@ -97,7 +107,7 @@ async function getRecentVideos(handleRaw, maxResults = 12) {
     platform: 'youtube',
   }));
 
-  return { channel: formatChannel(channel), videos };
+  return { channel: formatChannel(channel), videos, nextPage: playlistData.nextPageToken || null };
 }
 
 function formatChannel(channel) {
