@@ -216,11 +216,39 @@ button:disabled { opacity: 0.6; cursor: default; }
   color: var(--muted);
 }
 
-.video-card a.watch-link {
+.video-card .link-row {
   margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.video-card a.watch-link {
   font-size: 0.82rem;
   color: var(--accent);
   text-decoration: none;
 }
 
 .video-card a.watch-link:hover { text-decoration: underline; }
+
+.copy-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.copy-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.copy-btn.copied {
+  color: var(--accent);
+  border-color: var(--accent);
+}
