@@ -4,8 +4,10 @@ const twitch = require('../services/twitch');
 
 const router = express.Router();
 
+const VALID_CLIP_RANGES = ['all', '24h', '7d', '30d'];
+
 router.get('/lookup', async (req, res) => {
-  const { platform, handle, type } = req.query;
+  const { platform, handle, type, range } = req.query;
 
   if (!platform || !handle) {
     return res.status(400).json({ error: 'Both "platform" and "handle" query params are required.' });
@@ -20,17 +22,23 @@ router.get('/lookup', async (req, res) => {
   // For Twitch, "type" picks between full VODs ("videos", the default) and short clips ("clips").
   // Ignored for YouTube, which only has one kind of result.
   const twitchType = type === 'clips' ? 'clips' : 'videos';
+  // "range" only applies to Twitch clips: all / 24h / 7d / 30d (defaults to 30d).
+  const clipRange = VALID_CLIP_RANGES.includes(range) ? range : '30d';
 
   try {
     let result;
     if (platform === 'youtube') {
       result = await youtube.getRecentVideos(handle);
     } else if (twitchType === 'clips') {
-      result = await twitch.getRecentClips(handle);
+      result = await twitch.getRecentClips(handle, 12, clipRange);
     } else {
       result = await twitch.getRecentVideos(handle);
     }
-    res.json({ ...result, type: platform === 'twitch' ? twitchType : 'videos' });
+    res.json({
+      ...result,
+      type: platform === 'twitch' ? twitchType : 'videos',
+      ...(platform === 'twitch' && twitchType === 'clips' ? { range: clipRange } : {}),
+    });
   } catch (err) {
     console.error(`[lookup] ${platform} "${handle}" failed:`, err.message);
     res.status(502).json({ error: err.message || 'Lookup failed.' });
