@@ -32,6 +32,15 @@
           <button type="button" class="segmented-btn" data-type="clips" role="radio" aria-checked="false">Clips</button>
         </div>
       </div>
+      <div class="field hidden" id="clip-range-field">
+        <label for="clip-range">Clip range</label>
+        <select id="clip-range" name="clip-range">
+          <option value="all">All time</option>
+          <option value="30d" selected>Last 30 days</option>
+          <option value="7d">Last 7 days</option>
+          <option value="24h">Last 24 hours</option>
+        </select>
+      </div>
       <button type="submit" id="submit-btn">Look up</button>
     </form>
 
