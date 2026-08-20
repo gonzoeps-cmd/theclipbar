@@ -69,6 +69,32 @@ async function resolveChannel(handleRaw) {
   return data.items[0];
 }
 
+// Checks whether a channel is currently live. This requires YouTube's search endpoint (the
+// only way to find a live broadcast without already knowing its video id), which costs far
+// more API quota (100 units) than the regular list calls (1 unit) — so callers should only
+// invoke this on a fresh lookup, never on every "Load more" page.
+async function getLiveVideo(channelId, key) {
+  try {
+    const data = await fetchJson(
+      `${API_BASE}/search?part=snippet&channelId=${channelId}&eventType=live&type=video&maxResults=1&key=${key}`
+    );
+    const item = data.items?.[0];
+    if (!item?.id?.videoId) return null;
+    return {
+      id: item.id.videoId,
+      title: item.snippet?.title,
+      thumbnail:
+        item.snippet?.thumbnails?.medium?.url ||
+        item.snippet?.thumbnails?.default?.url ||
+        null,
+    };
+  } catch (err) {
+    // A live-check failure shouldn't break the whole lookup — just treat as "not live".
+    console.error('[youtube] live check failed:', err.message);
+    return null;
+  }
+}
+
 async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null) {
   const key = apiKey();
   const channel = await resolveChannel(handleRaw);
@@ -85,8 +111,11 @@ async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null) {
     .map((item) => item.contentDetails?.videoId)
     .filter(Boolean);
 
+  // Only check live status on a fresh lookup (not on "Load more" pages) to conserve quota.
+  const live = pageToken ? null : await getLiveVideo(channel.id, key);
+
   if (!videoIds.length) {
-    return { channel: formatChannel(channel), videos: [], nextPage: null };
+    return { channel: formatChannel(channel, live), videos: [], nextPage: null };
   }
 
   const videosData = await fetchJson(
@@ -107,10 +136,10 @@ async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null) {
     platform: 'youtube',
   }));
 
-  return { channel: formatChannel(channel), videos, nextPage: playlistData.nextPageToken || null };
+  return { channel: formatChannel(channel, live), videos, nextPage: playlistData.nextPageToken || null };
 }
 
-function formatChannel(channel) {
+function formatChannel(channel, live = null) {
   return {
     id: channel.id,
     title: channel.snippet?.title,
@@ -119,6 +148,7 @@ function formatChannel(channel) {
       channel.snippet?.thumbnails?.default?.url ||
       null,
     platform: 'youtube',
+    live: live ? { id: live.id, title: live.title, thumbnail: live.thumbnail, kind: 'live' } : null,
   };
 }
 
