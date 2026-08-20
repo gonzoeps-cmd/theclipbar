@@ -44,13 +44,23 @@
       <button type="submit" id="submit-btn">Look up</button>
     </form>
 
-    <div class="favorites-dropdown hidden" id="favorites-dropdown">
-      <button type="button" id="favorites-toggle" class="favorites-toggle" aria-haspopup="true" aria-expanded="false">
-        <span>★ Favorites</span>
-        <span class="favorites-count" id="favorites-count">0</span>
-        <span class="caret">&#9662;</span>
-      </button>
-      <div class="favorites-menu hidden" id="favorites-menu"></div>
+    <div class="favorites-row">
+      <div class="favorites-dropdown hidden" id="favorites-dropdown-youtube">
+        <button type="button" id="favorites-toggle-youtube" class="favorites-toggle" aria-haspopup="true" aria-expanded="false">
+          <span>★ YouTube Favorites</span>
+          <span class="favorites-count" id="favorites-count-youtube">0</span>
+          <span class="caret">&#9662;</span>
+        </button>
+        <div class="favorites-menu hidden" id="favorites-menu-youtube"></div>
+      </div>
+      <div class="favorites-dropdown hidden" id="favorites-dropdown-twitch">
+        <button type="button" id="favorites-toggle-twitch" class="favorites-toggle" aria-haspopup="true" aria-expanded="false">
+          <span>★ Twitch Favorites</span>
+          <span class="favorites-count" id="favorites-count-twitch">0</span>
+          <span class="caret">&#9662;</span>
+        </button>
+        <div class="favorites-menu hidden" id="favorites-menu-twitch"></div>
+      </div>
     </div>
 
     <div id="status" class="status" role="status"></div>
