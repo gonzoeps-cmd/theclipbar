@@ -68,51 +68,74 @@ function removeFavorite(platform, handle) {
   renderFavorites();
 }
 
-const favoritesDropdown = document.getElementById('favorites-dropdown');
-const favoritesToggle = document.getElementById('favorites-toggle');
-const favoritesMenu = document.getElementById('favorites-menu');
-const favoritesCount = document.getElementById('favorites-count');
+const FAVORITES_PLATFORMS = ['youtube', 'twitch'];
 
-function openFavoritesMenu() {
-  favoritesMenu.classList.remove('hidden');
-  favoritesToggle.setAttribute('aria-expanded', 'true');
+const favoritesEls = {
+  youtube: {
+    dropdown: document.getElementById('favorites-dropdown-youtube'),
+    toggle: document.getElementById('favorites-toggle-youtube'),
+    menu: document.getElementById('favorites-menu-youtube'),
+    count: document.getElementById('favorites-count-youtube'),
+  },
+  twitch: {
+    dropdown: document.getElementById('favorites-dropdown-twitch'),
+    toggle: document.getElementById('favorites-toggle-twitch'),
+    menu: document.getElementById('favorites-menu-twitch'),
+    count: document.getElementById('favorites-count-twitch'),
+  },
+};
+
+function openFavoritesMenu(platform) {
+  const { menu, toggle } = favoritesEls[platform];
+  menu.classList.remove('hidden');
+  toggle.setAttribute('aria-expanded', 'true');
 }
 
-function closeFavoritesMenu() {
-  favoritesMenu.classList.add('hidden');
-  favoritesToggle.setAttribute('aria-expanded', 'false');
+function closeFavoritesMenu(platform) {
+  const { menu, toggle } = favoritesEls[platform];
+  menu.classList.add('hidden');
+  toggle.setAttribute('aria-expanded', 'false');
 }
 
-function toggleFavoritesMenu() {
-  if (favoritesMenu.classList.contains('hidden')) {
-    openFavoritesMenu();
+function closeAllFavoritesMenus() {
+  FAVORITES_PLATFORMS.forEach((p) => closeFavoritesMenu(p));
+}
+
+function toggleFavoritesMenu(platform) {
+  const { menu } = favoritesEls[platform];
+  if (menu.classList.contains('hidden')) {
+    closeAllFavoritesMenus();
+    openFavoritesMenu(platform);
   } else {
-    closeFavoritesMenu();
+    closeFavoritesMenu(platform);
   }
 }
 
 function renderFavorites() {
   const favs = getFavorites();
-  if (!favs.length) {
-    favoritesDropdown.classList.add('hidden');
-    closeFavoritesMenu();
-    favoritesMenu.innerHTML = '';
-    return;
-  }
-  favoritesDropdown.classList.remove('hidden');
-  favoritesCount.textContent = String(favs.length);
-  favoritesMenu.innerHTML = favs
-    .map(
-      (f) => `
-    <div class="favorite-item" data-platform="${f.platform}" data-handle="${f.handle}">
-      ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : `<span class="favorite-item-placeholder"></span>`}
-      <span class="favorite-item-name">${f.title || f.handle}</span>
-      <span class="favorite-item-platform">${f.platform === 'youtube' ? 'YouTube' : 'Twitch'}</span>
-      <button type="button" class="favorite-item-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites" aria-label="Remove from favorites">&times;</button>
-    </div>
-  `
-    )
-    .join('');
+  FAVORITES_PLATFORMS.forEach((platform) => {
+    const { dropdown, menu, count } = favoritesEls[platform];
+    const platformFavs = favs.filter((f) => f.platform === platform);
+    if (!platformFavs.length) {
+      dropdown.classList.add('hidden');
+      closeFavoritesMenu(platform);
+      menu.innerHTML = '';
+      return;
+    }
+    dropdown.classList.remove('hidden');
+    count.textContent = String(platformFavs.length);
+    menu.innerHTML = platformFavs
+      .map(
+        (f) => `
+      <div class="favorite-item" data-platform="${f.platform}" data-handle="${f.handle}">
+        ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : `<span class="favorite-item-placeholder"></span>`}
+        <span class="favorite-item-name">${f.title || f.handle}</span>
+        <button type="button" class="favorite-item-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites" aria-label="Remove from favorites">&times;</button>
+      </div>
+    `
+      )
+      .join('');
+  });
 }
 
 function formatDuration(totalSeconds) {
@@ -471,33 +494,40 @@ channelCard.addEventListener('click', (e) => {
   }
 });
 
-favoritesToggle.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleFavoritesMenu();
-});
+FAVORITES_PLATFORMS.forEach((platform) => {
+  const { toggle, menu } = favoritesEls[platform];
 
-favoritesMenu.addEventListener('click', (e) => {
-  const removeBtn = e.target.closest('.favorite-item-remove');
-  if (removeBtn) {
+  toggle.addEventListener('click', (e) => {
     e.stopPropagation();
-    removeFavorite(removeBtn.dataset.platform, removeBtn.dataset.handle);
-    return;
-  }
-  const item = e.target.closest('.favorite-item');
-  if (item) {
-    const { platform, handle } = item.dataset;
-    platformSelect.value = platform;
-    handleInput.value = handle;
-    updateTwitchFieldVisibility();
-    closeFavoritesMenu();
-    runLookup(platform, handle);
-  }
+    toggleFavoritesMenu(platform);
+  });
+
+  menu.addEventListener('click', (e) => {
+    const removeBtn = e.target.closest('.favorite-item-remove');
+    if (removeBtn) {
+      e.stopPropagation();
+      removeFavorite(removeBtn.dataset.platform, removeBtn.dataset.handle);
+      return;
+    }
+    const item = e.target.closest('.favorite-item');
+    if (item) {
+      const { platform: itemPlatform, handle } = item.dataset;
+      platformSelect.value = itemPlatform;
+      handleInput.value = handle;
+      updateTwitchFieldVisibility();
+      closeFavoritesMenu(platform);
+      runLookup(itemPlatform, handle);
+    }
+  });
 });
 
 document.addEventListener('click', (e) => {
-  if (!favoritesDropdown.contains(e.target)) {
-    closeFavoritesMenu();
-  }
+  FAVORITES_PLATFORMS.forEach((platform) => {
+    const { dropdown } = favoritesEls[platform];
+    if (!dropdown.contains(e.target)) {
+      closeFavoritesMenu(platform);
+    }
+  });
 });
 
 loadMoreBtn.addEventListener('click', loadMore);
