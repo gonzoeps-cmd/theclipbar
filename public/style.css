@@ -217,9 +217,15 @@ button:disabled { opacity: 0.6; cursor: default; }
   border-color: #f5c518;
 }
 
+.favorites-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 2px 0;
+}
+
 .favorites-dropdown {
   position: relative;
-  margin: 14px 2px 0;
   display: inline-block;
 }
 
