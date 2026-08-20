@@ -131,10 +131,13 @@ function formatDate(iso) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function embedUrlFor({ id, platform, kind }) {
+function embedUrlFor({ id, platform, kind, channelLogin }) {
   const host = window.location.hostname;
   if (platform === 'youtube') {
     return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1`;
+  }
+  if (kind === 'live') {
+    return `https://player.twitch.tv/?channel=${encodeURIComponent(channelLogin)}&parent=${host}&autoplay=true`;
   }
   if (kind === 'clip') {
     return `https://clips.twitch.tv/embed?clip=${encodeURIComponent(id)}&parent=${host}&autoplay=true`;
@@ -170,6 +173,40 @@ function closePlayer(thumbWrap) {
   thumbWrap.classList.remove('playing');
   thumbWrap.querySelector('.player-iframe')?.remove();
   thumbWrap.querySelector('.close-player-btn')?.remove();
+}
+
+function openLivePlayer() {
+  const wrap = document.getElementById('live-player-wrap');
+  if (!wrap) return;
+  const { id, platform, channelLogin } = wrap.dataset;
+
+  const iframe = document.createElement('iframe');
+  iframe.className = 'player-iframe';
+  iframe.src = embedUrlFor({ id, platform, kind: 'live', channelLogin });
+  iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+  iframe.allowFullscreen = true;
+  iframe.frameBorder = '0';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'close-player-btn close-live-btn';
+  closeBtn.setAttribute('aria-label', 'Close live player');
+  closeBtn.title = 'Close live player';
+  closeBtn.textContent = '✕';
+
+  wrap.innerHTML = '';
+  wrap.appendChild(iframe);
+  wrap.appendChild(closeBtn);
+  wrap.classList.remove('hidden');
+  wrap.classList.add('playing');
+}
+
+function closeLivePlayer() {
+  const wrap = document.getElementById('live-player-wrap');
+  if (!wrap) return;
+  wrap.classList.add('hidden');
+  wrap.classList.remove('playing');
+  wrap.innerHTML = '';
 }
 
 function formatViewCount(count) {
@@ -213,21 +250,31 @@ function renderChannel(channel, platform, handle) {
   }
   channelCard.classList.remove('hidden');
   const fav = isFavorite(platform, handle);
+  const live = channel.live;
   channelCard.innerHTML = `
-    ${channel.thumbnail ? `<img src="${channel.thumbnail}" alt="${channel.title}" />` : ''}
-    <div class="channel-info">
-      <div style="font-weight:600;">${channel.title || 'Unknown channel'}</div>
-      <div style="color:var(--muted); font-size:0.82rem; text-transform:capitalize;">${channel.platform}</div>
+    <div class="channel-card-top">
+      ${channel.thumbnail ? `<img src="${channel.thumbnail}" alt="${channel.title}" />` : ''}
+      <div class="channel-info">
+        <div class="channel-name-row">
+          <span style="font-weight:600;">${channel.title || 'Unknown channel'}</span>
+          ${live ? `<span class="live-badge">&#9679; LIVE</span>` : ''}
+        </div>
+        <div style="color:var(--muted); font-size:0.82rem; text-transform:capitalize;">${channel.platform}</div>
+      </div>
+      <div class="channel-actions">
+        ${live ? `<button type="button" class="watch-live-btn">Watch live</button>` : ''}
+        <button
+          type="button"
+          class="fav-btn ${fav ? 'active' : ''}"
+          data-platform="${platform}"
+          data-handle="${handle}"
+          data-title="${channel.title || handle}"
+          data-thumbnail="${channel.thumbnail || ''}"
+          title="${fav ? 'Remove from favorites' : 'Save to favorites'}"
+        >${fav ? '★ Saved' : '☆ Save'}</button>
+      </div>
     </div>
-    <button
-      type="button"
-      class="fav-btn ${fav ? 'active' : ''}"
-      data-platform="${platform}"
-      data-handle="${handle}"
-      data-title="${channel.title || handle}"
-      data-thumbnail="${channel.thumbnail || ''}"
-      title="${fav ? 'Remove from favorites' : 'Save to favorites'}"
-    >${fav ? '★ Saved' : '☆ Save'}</button>
+    ${live ? `<div class="live-player-wrap hidden" id="live-player-wrap" data-id="${live.id || ''}" data-platform="${platform}" data-channel-login="${channel.login || handle}"></div>` : ''}
   `;
 }
 
@@ -396,6 +443,18 @@ results.addEventListener('click', async (e) => {
 });
 
 channelCard.addEventListener('click', (e) => {
+  const liveBtn = e.target.closest('.watch-live-btn');
+  if (liveBtn) {
+    openLivePlayer();
+    return;
+  }
+
+  const closeLiveBtn = e.target.closest('.close-live-btn');
+  if (closeLiveBtn) {
+    closeLivePlayer();
+    return;
+  }
+
   const btn = e.target.closest('.fav-btn');
   if (!btn) return;
   const { platform, handle, title, thumbnail } = btn.dataset;
