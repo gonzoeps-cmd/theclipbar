@@ -66,7 +66,31 @@ function twitchDurationToSeconds(duration) {
 
 function bestThumbnail(url, width = 320, height = 180) {
   if (!url) return null;
-  return url.replace('%{width}', String(width)).replace('%{height}', String(height));
+  // Clips/VODs use "%{width}x%{height}"; live stream previews use "{width}x{height}" (no %).
+  return url
+    .replace('%{width}', String(width))
+    .replace('%{height}', String(height))
+    .replace('{width}', String(width))
+    .replace('{height}', String(height));
+}
+
+// Checks whether a channel is currently live. Uses the app access token like everything else
+// here — no broadcaster-scoped login needed for this endpoint.
+async function getLiveStream(userId) {
+  try {
+    const data = await helixFetch(`/streams?user_id=${userId}`);
+    const stream = data.data?.[0];
+    if (!stream) return null;
+    return {
+      id: stream.id,
+      title: stream.title,
+      thumbnail: bestThumbnail(stream.thumbnail_url),
+    };
+  } catch (err) {
+    // A live-check failure shouldn't break the whole lookup — just treat as "not live".
+    console.error('[twitch] live check failed:', err.message);
+    return null;
+  }
 }
 
 async function resolveUser(handleRaw) {
@@ -79,12 +103,14 @@ async function resolveUser(handleRaw) {
   return user;
 }
 
-function formatChannel(user) {
+function formatChannel(user, live = null) {
   return {
     id: user.id,
     title: user.display_name,
     thumbnail: user.profile_image_url,
     platform: 'twitch',
+    login: user.login,
+    live: live ? { id: live.id, title: live.title, thumbnail: live.thumbnail, kind: 'live' } : null,
   };
 }
 
@@ -109,7 +135,10 @@ async function getRecentVideos(handleRaw, maxResults = 12, after = null) {
     kind: 'video',
   }));
 
-  return { channel: formatChannel(user), videos, nextPage: videosData.pagination?.cursor || null };
+  // Only check live status on a fresh lookup (not on "Load more" pages).
+  const live = after ? null : await getLiveStream(user.id);
+
+  return { channel: formatChannel(user, live), videos, nextPage: videosData.pagination?.cursor || null };
 }
 
 // Twitch's clips endpoint doesn't support pure recency sorting. When a range is given we
@@ -155,7 +184,10 @@ async function getRecentClips(handleRaw, maxResults = 12, rangeKey = '30d', offs
   const nextOffset = offset + maxResults;
   const nextPage = nextOffset < allVideos.length ? String(nextOffset) : null;
 
-  return { channel: formatChannel(user), videos, nextPage };
+  // Only check live status on a fresh lookup (not on "Load more" pages).
+  const live = offset ? null : await getLiveStream(user.id);
+
+  return { channel: formatChannel(user, live), videos, nextPage };
 }
 
 module.exports = { getRecentVideos, getRecentClips, twitchDurationToSeconds, getAppAccessToken, CLIP_RANGE_MS };
