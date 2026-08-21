@@ -68,7 +68,7 @@ function removeFavorite(platform, handle) {
   renderFavorites();
 }
 
-const FAVORITES_PLATFORMS = ['youtube', 'twitch'];
+const FAVORITES_PLATFORMS = ['youtube', 'twitch', 'tiktok'];
 
 const favoritesEls = {
   youtube: {
@@ -82,6 +82,12 @@ const favoritesEls = {
     toggle: document.getElementById('favorites-toggle-twitch'),
     menu: document.getElementById('favorites-menu-twitch'),
     count: document.getElementById('favorites-count-twitch'),
+  },
+  tiktok: {
+    dropdown: document.getElementById('favorites-dropdown-tiktok'),
+    toggle: document.getElementById('favorites-toggle-tiktok'),
+    menu: document.getElementById('favorites-menu-tiktok'),
+    count: document.getElementById('favorites-count-tiktok'),
   },
 };
 
@@ -176,6 +182,11 @@ const NEW_UPLOAD_WINDOW_MS = 24 * 60 * 60 * 1000;
 // when we have it to skip the expensive name-search step too. Favorites saved before this
 // existed don't have a channel id yet — the first check for those falls back to the normal
 // (pricier) lookup, and then remembers the id so every check after that is cheap.
+//
+// TikTok: checks live status only (no official API to check for new uploads at all, so isNew
+// always comes back false for TikTok favorites). The live check itself is a best-effort page
+// scrape (see src/services/tiktok.js) — it can occasionally fail or come back stale if TikTok
+// changes something on their end.
 async function refreshFavoritesStatus(platform) {
   const favs = getFavorites().filter((f) => f.platform === platform);
   if (!favs.length) return;
@@ -192,7 +203,7 @@ async function refreshFavoritesStatus(platform) {
         const data = await res.json();
         if (!res.ok) return { ...f, isLive: false, isNew: false };
 
-        const isLive = platform === 'twitch' && !!data.channel?.live;
+        const isLive = (platform === 'twitch' || platform === 'tiktok') && !!data.channel?.live;
         const latest = data.videos?.[0] || null;
         const isNew = !!(
           latest?.publishedAt &&
@@ -409,7 +420,11 @@ function renderChannel(channel, platform, handle) {
         <div style="color:var(--muted); font-size:0.82rem; text-transform:capitalize;">${channel.platform}</div>
       </div>
       <div class="channel-actions">
-        ${live ? `<button type="button" class="watch-live-btn">Watch live</button>` : ''}
+        ${live
+          ? platform === 'tiktok'
+            ? `<a class="watch-live-btn" href="https://www.tiktok.com/@${encodeURIComponent((channel.username || handle).replace(/^@/, ''))}/live" target="_blank" rel="noopener">Watch live &#8599;</a>`
+            : `<button type="button" class="watch-live-btn">Watch live</button>`
+          : ''}
         <button
           type="button"
           class="fav-btn ${fav ? 'active' : ''}"
@@ -422,7 +437,7 @@ function renderChannel(channel, platform, handle) {
         >${fav ? '★ Saved' : '☆ Save'}</button>
       </div>
     </div>
-    ${live ? `<div class="live-player-wrap hidden" id="live-player-wrap" data-id="${live.id || ''}" data-platform="${platform}" data-channel-login="${channel.login || handle}"></div>` : ''}
+    ${live && platform !== 'tiktok' ? `<div class="live-player-wrap hidden" id="live-player-wrap" data-id="${live.id || ''}" data-platform="${platform}" data-channel-login="${channel.login || handle}"></div>` : ''}
   `;
 }
 
@@ -472,7 +487,8 @@ async function runLookup(platform, handle) {
   nextPage = null;
   loadMoreBtn.classList.add('hidden');
   const isClips = platform === 'twitch' && twitchType === 'clips';
-  const noun = isClips ? 'clips' : platform === 'twitch' ? 'streams' : 'videos';
+  const isTikTok = platform === 'tiktok';
+  const noun = isClips ? 'clips' : platform === 'twitch' ? 'streams' : isTikTok ? 'live status' : 'videos';
   const rangeLabel = isClips ? CLIP_RANGE_LABELS[clipRange] : '';
   setStatus(`Looking up ${noun}${rangeLabel ? ` (${rangeLabel})` : ''}...`);
 
@@ -490,13 +506,23 @@ async function runLookup(platform, handle) {
       throw new Error(data.error || 'Lookup failed.');
     }
     renderChannel(data.channel, platform, handle);
-    const emptyLabel = isClips
-      ? `No clips found (${rangeLabel}).`
-      : 'No recent videos found.';
-    renderVideos(data.videos || [], emptyLabel);
-    const count = data.videos?.length || 0;
-    const countNoun = noun === 'clips' ? (count === 1 ? 'clip' : 'clips') : count === 1 ? noun.slice(0, -1) : noun;
-    setStatus(`Found ${count} ${countNoun}${rangeLabel ? ` (${rangeLabel})` : ''}.`);
+
+    if (isTikTok) {
+      // TikTok has no public API for browsing a creator's past videos — only live status,
+      // shown above in the channel card.
+      results.innerHTML = `<p style="color:var(--muted);">TikTok video browsing isn't available — only live status is shown above.</p>`;
+      const name = data.channel?.title || handle;
+      setStatus(data.channel?.live ? `${name} is live right now.` : `${name} isn't live right now.`);
+    } else {
+      const emptyLabel = isClips
+        ? `No clips found (${rangeLabel}).`
+        : 'No recent videos found.';
+      renderVideos(data.videos || [], emptyLabel);
+      const count = data.videos?.length || 0;
+      const countNoun = noun === 'clips' ? (count === 1 ? 'clip' : 'clips') : count === 1 ? noun.slice(0, -1) : noun;
+      setStatus(`Found ${count} ${countNoun}${rangeLabel ? ` (${rangeLabel})` : ''}.`);
+    }
+
     lastLookup = { platform, handle };
     nextPage = data.nextPage || null;
     loadMoreBtn.classList.toggle('hidden', !nextPage);
@@ -592,7 +618,9 @@ results.addEventListener('click', async (e) => {
 
 channelCard.addEventListener('click', (e) => {
   const liveBtn = e.target.closest('.watch-live-btn');
-  if (liveBtn) {
+  if (liveBtn && liveBtn.tagName === 'BUTTON') {
+    // TikTok's "Watch live" is a plain link to TikTok (no public embed player exists for
+    // TikTok LIVE), so it navigates normally instead of opening the inline player.
     openLivePlayer();
     return;
   }
