@@ -201,4 +201,60 @@ async function getChannel(handleRaw) {
   return { channel: formatChannel(profile, live), videos, nextPage: null };
 }
 
-module.exports = { getChannel };
+// TEMPORARY DIAGNOSTIC — not used by the app itself. Reports the shape of a profile page's
+// embedded JSON (top-level keys, and a search for anything that looks like a list of video
+// items) so the real path can be found and wired into findVideoItems() above once discovered.
+// Safe to remove once that's done; it never runs as part of a normal lookup.
+function looksLikeVideoItem(obj) {
+  return (
+    obj &&
+    typeof obj === 'object' &&
+    !Array.isArray(obj) &&
+    ('desc' in obj || 'video' in obj) &&
+    ('stats' in obj || 'statsV2' in obj)
+  );
+}
+
+function findArraysOfVideoItems(node, path = '', results = [], depth = 0, seen = new WeakSet()) {
+  if (depth > 8 || node == null || typeof node !== 'object') return results;
+  if (seen.has(node)) return results;
+  seen.add(node);
+
+  if (Array.isArray(node)) {
+    if (node.length && looksLikeVideoItem(node[0])) {
+      results.push({ path, length: node.length, sampleKeys: Object.keys(node[0]).slice(0, 25) });
+    }
+    node.slice(0, 5).forEach((item, i) =>
+      findArraysOfVideoItems(item, `${path}[${i}]`, results, depth + 1, seen)
+    );
+  } else {
+    for (const key of Object.keys(node)) {
+      findArraysOfVideoItems(node[key], path ? `${path}.${key}` : key, results, depth + 1, seen);
+    }
+  }
+  return results;
+}
+
+async function debugProfileShape(handleRaw) {
+  const username = cleanHandle(handleRaw);
+  const html = await fetchHtml(`https://www.tiktok.com/@${encodeURIComponent(username)}`);
+  const state = extractPageState(html);
+  if (!state) {
+    return {
+      found: false,
+      reason: 'No __UNIVERSAL_DATA_FOR_REHYDRATION__ or SIGI_STATE script tag found on the page.',
+      htmlLength: html.length,
+    };
+  }
+  const topLevelKeys =
+    state.shape === 'universal' ? Object.keys(state.data?.__DEFAULT_SCOPE__ || {}) : Object.keys(state.data || {});
+  const userDetailKeys =
+    state.shape === 'universal'
+      ? Object.keys(state.data?.__DEFAULT_SCOPE__?.['webapp.user-detail'] || {})
+      : null;
+  const videoArrayHits = findArraysOfVideoItems(state.data);
+
+  return { shape: state.shape, topLevelKeys, userDetailKeys, videoArrayHits, htmlLength: html.length };
+}
+
+module.exports = { getChannel, debugProfileShape };
