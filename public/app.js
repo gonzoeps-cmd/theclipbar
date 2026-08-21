@@ -53,11 +53,11 @@ function isFavorite(platform, handle) {
   return getFavorites().some((f) => favoriteKey(f.platform, f.handle) === key);
 }
 
-function addFavorite({ platform, handle, title, thumbnail }) {
+function addFavorite({ platform, handle, title, thumbnail, channelId }) {
   const favs = getFavorites();
   const key = favoriteKey(platform, handle);
   if (favs.some((f) => favoriteKey(f.platform, f.handle) === key)) return;
-  favs.unshift({ platform, handle, title, thumbnail });
+  favs.unshift({ platform, handle, title, thumbnail, channelId: channelId || null });
   saveFavoritesList(favs);
   renderFavorites();
 }
@@ -154,11 +154,20 @@ function updateFavoriteMeta(platform, handle, patch) {
   saveFavoritesList(favs);
 }
 
-// Checks live status (and, for YouTube, whether a new video has posted since we last checked)
-// for every saved favorite on a platform, then re-sorts that platform's dropdown so live
-// creators show up first, followed by anyone with a new upload. Runs only when the dropdown is
-// actually opened — not on a timer — to keep API usage reasonable, since YouTube's live check
-// costs more of its free daily quota than a normal lookup.
+// Checks status for every saved favorite on a platform, then re-sorts that platform's dropdown
+// so the most relevant creators show up first. Runs only when the dropdown is actually opened
+// — not on a timer — to keep API usage reasonable.
+//
+// Twitch: checks live status (cheap, no quota limit) — anyone live now goes to the top.
+//
+// YouTube: does NOT check live status here. YouTube's live check costs 100x more of its free
+// daily quota than anything else the app does, and checking a whole favorites list of that
+// cost every time it's opened blows through the day's quota almost immediately (live status
+// still shows on the single-creator lookup page, just not across the whole favorites list).
+// Instead this only checks for a new upload (cheap), using the favorite's saved channel id
+// when we have it to skip the expensive name-search step too. Favorites saved before this
+// existed don't have a channel id yet — the first check for those falls back to the normal
+// (pricier) lookup, and then remembers the id so every check after that is cheap.
 async function refreshFavoritesStatus(platform) {
   const favs = getFavorites().filter((f) => f.platform === platform);
   if (!favs.length) return;
@@ -167,16 +176,23 @@ async function refreshFavoritesStatus(platform) {
     favs.map(async (f) => {
       try {
         const params = new URLSearchParams({ platform, handle: f.handle });
+        if (platform === 'youtube') {
+          params.set('skipLive', '1');
+          if (f.channelId) params.set('channelId', f.channelId);
+        }
         const res = await fetch(`/api/lookup?${params.toString()}`);
         const data = await res.json();
         if (!res.ok) return { ...f, isLive: false, isNew: false };
 
-        const isLive = !!data.channel?.live;
+        const isLive = platform === 'twitch' && !!data.channel?.live;
         let isNew = false;
         if (platform === 'youtube') {
           const newestId = data.videos?.[0]?.id || null;
           isNew = !!(f.lastSeenVideoId && newestId && f.lastSeenVideoId !== newestId);
-          if (newestId) updateFavoriteMeta(platform, f.handle, { lastSeenVideoId: newestId });
+          const metaPatch = {};
+          if (newestId) metaPatch.lastSeenVideoId = newestId;
+          if (!f.channelId && data.channel?.id) metaPatch.channelId = data.channel.id;
+          if (Object.keys(metaPatch).length) updateFavoriteMeta(platform, f.handle, metaPatch);
         }
         return { ...f, isLive, isNew };
       } catch {
@@ -392,6 +408,7 @@ function renderChannel(channel, platform, handle) {
           data-handle="${handle}"
           data-title="${channel.title || handle}"
           data-thumbnail="${channel.thumbnail || ''}"
+          data-channel-id="${channel.id || ''}"
           title="${fav ? 'Remove from favorites' : 'Save to favorites'}"
         >${fav ? '★ Saved' : '☆ Save'}</button>
       </div>
@@ -579,14 +596,14 @@ channelCard.addEventListener('click', (e) => {
 
   const btn = e.target.closest('.fav-btn');
   if (!btn) return;
-  const { platform, handle, title, thumbnail } = btn.dataset;
+  const { platform, handle, title, thumbnail, channelId } = btn.dataset;
   if (isFavorite(platform, handle)) {
     removeFavorite(platform, handle);
     btn.classList.remove('active');
     btn.textContent = '☆ Save';
     btn.title = 'Save to favorites';
   } else {
-    addFavorite({ platform, handle, title, thumbnail });
+    addFavorite({ platform, handle, title, thumbnail, channelId });
     btn.classList.add('active');
     btn.textContent = '★ Saved';
     btn.title = 'Remove from favorites';
