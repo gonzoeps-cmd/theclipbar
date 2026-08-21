@@ -116,4 +116,55 @@ async function getProfile(username) {
   };
 }
 
-//
+// Best-effort live check — any failure (network error, TikTok having changed the page shape,
+// etc.) is treated as "not live" rather than breaking the whole lookup, same as the
+// YouTube/Twitch live checks.
+async function getLiveStatus(username) {
+  try {
+    const html = await fetchHtml(`https://www.tiktok.com/@${encodeURIComponent(username)}/live`);
+    const state = extractPageState(html);
+    const room = findLiveRoom(state);
+    // No room object at all is different from a room that's simply offline (status !== 2) —
+    // the former usually means the page didn't load the way we expect (blocked/changed), so
+    // that case gets logged; a plain "not live" room is the common, expected case and stays quiet.
+    if (!room) {
+      console.error(
+        `[tiktok] live check for "@${username}" found no live-room data at all — ` +
+        `page-state shape found: ${state ? state.shape : 'none'}, ` +
+        `looks like a block/verification page: ${looksLikeBlockPage(html)}`
+      );
+      return null;
+    }
+    // TikTok uses status 2 for "currently broadcasting"; other values mean offline/ended.
+    if (room.status !== 2) return null;
+    return {
+      id: String(room.id || room.roomId || ''),
+      title: room.title || null,
+      thumbnail: room.cover?.url_list?.[0] || room.cover?.urlList?.[0] || room.coverUrl || null,
+    };
+  } catch (err) {
+    console.error('[tiktok] live check failed:', err.message);
+    return null;
+  }
+}
+
+function formatChannel(profile, live = null) {
+  return {
+    id: profile.id,
+    title: profile.title,
+    thumbnail: profile.thumbnail,
+    platform: 'tiktok',
+    username: profile.username,
+    live: live ? { id: live.id, title: live.title, thumbnail: live.thumbnail, kind: 'live' } : null,
+  };
+}
+
+// TikTok doesn't offer any public, keyless way to list a creator's past videos (unlike the
+// YouTube/Twitch APIs) — so a TikTok lookup only ever returns live status, never a video list.
+async function getChannel(handleRaw) {
+  const username = cleanHandle(handleRaw);
+  const [profile, live] = await Promise.all([getProfile(username), getLiveStatus(username)]);
+  return { channel: formatChannel(profile, live), videos: [], nextPage: null };
+}
+
+module.exports = { getChannel };
