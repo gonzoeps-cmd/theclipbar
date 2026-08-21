@@ -33,27 +33,6 @@ async function fetchHtml(url) {
   return res.text();
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// TikTok's anti-bot protection intermittently serves a verification/CAPTCHA page instead of the
-// real page to server/datacenter requests (confirmed via server logs — the exact same handle can
-// get the real page on one request and a block page on the next, seemingly at random). These
-// blocks tend to be transient, so a couple of quick retries clears up a meaningful share of them.
-// If every attempt still comes back blocked, callers get a distinct "blocked" error instead of it
-// silently looking like the page just had no data.
-async function fetchHtmlRetryingBlocks(url, attempts = 3) {
-  for (let i = 0; i < attempts; i++) {
-    const html = await fetchHtml(url);
-    if (!looksLikeBlockPage(html)) return html;
-    if (i < attempts - 1) await sleep(400 * (i + 1));
-  }
-  const err = new Error('TikTok is temporarily blocking this lookup — try again in a moment.');
-  err.tiktokBlocked = true;
-  throw err;
-}
-
 // TikTok embeds page state as JSON in one of these script tags depending on which version of
 // the site rendered the page. Try the modern one first and fall back to the legacy one.
 function extractPageState(html) {
@@ -105,36 +84,11 @@ function findLiveRoom(state) {
   return state.data?.LiveRoom?.liveRoomUserInfo?.liveRoom || null;
 }
 
-// Heuristic check for the interstitial/verification pages TikTok sometimes serves instead of
-// the real page (common for datacenter/server IPs, like the one this app runs on). If a lookup
-// fails and this comes back true, it's a strong sign TikTok blocked/challenged the request
-// rather than the page shape having actually changed.
-function looksLikeBlockPage(html) {
-  return /verify you are human|captcha|Access Denied|Just a moment\.\.\.|__tt_challenge/i.test(html);
-}
-
-// DIAGNOSTIC LOGGING: helps tell apart "TikTok changed its page JSON shape" vs "genuinely not
-// found/not live" when reports come in of a lookup behaving unexpectedly. The "blocked" case is
-// handled separately by fetchHtmlRetryingBlocks above, so by the time html gets here it's never
-// a block page — if it were, we'd already be in the catch block below instead.
 async function getProfile(username) {
-  let html;
-  try {
-    html = await fetchHtmlRetryingBlocks(`https://www.tiktok.com/@${encodeURIComponent(username)}`);
-  } catch (err) {
-    if (err.tiktokBlocked) {
-      console.error(`[tiktok] profile lookup for "@${username}" blocked after retries`);
-      throw new Error(`TikTok is temporarily blocking the lookup for "@${username}" — try again in a moment.`);
-    }
-    throw err;
-  }
+  const html = await fetchHtml(`https://www.tiktok.com/@${encodeURIComponent(username)}`);
   const state = extractPageState(html);
   const user = findUserInfo(state);
   if (!user) {
-    console.error(
-      `[tiktok] profile lookup failed for "@${username}" — html length: ${html.length}, ` +
-      `page-state shape found: ${state ? state.shape : 'none'}`
-    );
     throw new Error(`Could not find TikTok user "@${username}"`);
   }
   return {
@@ -146,37 +100,22 @@ async function getProfile(username) {
 }
 
 // Best-effort live check — any failure (network error, TikTok having changed the page shape,
-// a block that survived retries, etc.) is treated as "not live" rather than breaking the whole
-// lookup, same as the YouTube/Twitch live checks.
+// etc.) is treated as "not live" rather than breaking the whole lookup, same as the
+// YouTube/Twitch live checks.
 async function getLiveStatus(username) {
   try {
-    const html = await fetchHtmlRetryingBlocks(`https://www.tiktok.com/@${encodeURIComponent(username)}/live`);
+    const html = await fetchHtml(`https://www.tiktok.com/@${encodeURIComponent(username)}/live`);
     const state = extractPageState(html);
     const room = findLiveRoom(state);
-    // No room object at all is different from a room that's simply offline (status !== 2) —
-    // the former usually means the page didn't load the way we expect (TikTok changed the
-    // shape), so that case gets logged; a plain "not live" room is the common, expected case
-    // and stays quiet.
-    if (!room) {
-      console.error(
-        `[tiktok] live check for "@${username}" found no live-room data at all — ` +
-        `page-state shape found: ${state ? state.shape : 'none'}`
-      );
-      return null;
-    }
     // TikTok uses status 2 for "currently broadcasting"; other values mean offline/ended.
-    if (room.status !== 2) return null;
+    if (!room || room.status !== 2) return null;
     return {
       id: String(room.id || room.roomId || ''),
       title: room.title || null,
       thumbnail: room.cover?.url_list?.[0] || room.cover?.urlList?.[0] || room.coverUrl || null,
     };
   } catch (err) {
-    if (err.tiktokBlocked) {
-      console.error(`[tiktok] live check for "@${username}" blocked after retries`);
-    } else {
-      console.error('[tiktok] live check failed:', err.message);
-    }
+    console.error('[tiktok] live check failed:', err.message);
     return null;
   }
 }
