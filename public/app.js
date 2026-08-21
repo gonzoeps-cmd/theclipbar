@@ -183,12 +183,10 @@ const NEW_UPLOAD_WINDOW_MS = 24 * 60 * 60 * 1000;
 // existed don't have a channel id yet — the first check for those falls back to the normal
 // (pricier) lookup, and then remembers the id so every check after that is cheap.
 //
-// TikTok: checks both live status and recent uploads, same as Twitch — but both are best-effort
-// page scrapes (see src/services/tiktok.js, since TikTok has no official API for either), and
-// they're deliberately independent of each other: if TikTok changes something that breaks the
-// video-feed scrape, live status keeps working fine, and vice versa. The video feed can also
-// legitimately come back empty even when nothing's broken (TikTok doesn't always include it on
-// the page), in which case isNew just comes back false for that favorite.
+// TikTok: checks live status only (no official API to check for new uploads at all, so isNew
+// always comes back false for TikTok favorites). The live check itself is a best-effort page
+// scrape (see src/services/tiktok.js) — it can occasionally fail or come back stale if TikTok
+// changes something on their end.
 async function refreshFavoritesStatus(platform) {
   const favs = getFavorites().filter((f) => f.platform === platform);
   if (!favs.length) return;
@@ -295,9 +293,6 @@ function embedUrlFor({ id, platform, kind, channelLogin }) {
   const host = window.location.hostname;
   if (platform === 'youtube') {
     return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1`;
-  }
-  if (platform === 'tiktok') {
-    return `https://www.tiktok.com/embed/v2/${encodeURIComponent(id)}`;
   }
   if (kind === 'live') {
     return `https://player.twitch.tv/?channel=${encodeURIComponent(channelLogin)}&parent=${host}&autoplay=true`;
@@ -453,7 +448,7 @@ function renderChannel(channel, platform, handle) {
 function buildVideoCard(video) {
   const card = document.createElement('article');
   card.className = 'video-card';
-  const platformLabel = video.platform === 'youtube' ? 'YouTube' : video.platform === 'tiktok' ? 'TikTok' : 'Twitch';
+  const platformLabel = video.platform === 'youtube' ? 'YouTube' : 'Twitch';
   const kindLabel = video.kind === 'clip' ? 'Clip' : video.platform === 'twitch' ? 'VOD' : '';
   const viewLabel = formatViewCount(video.viewCount);
   const metaParts = [formatDate(video.publishedAt), viewLabel].filter(Boolean);
@@ -517,15 +512,12 @@ async function runLookup(platform, handle) {
     renderChannel(data.channel, platform, handle);
 
     if (isTikTok) {
-      // The video feed is best-effort (see src/services/tiktok.js) — TikTok doesn't always
-      // include it on the page, so an empty list here doesn't necessarily mean anything's wrong.
-      const emptyLabel = "Couldn't load a video feed for this profile right now (live status above still works either way).";
-      renderVideos(data.videos || [], emptyLabel);
+      // TikTok has no public API for browsing a creator's past videos — only live status,
+      // shown above in the channel card. Use the profile picture or "Watch live" link to open
+      // their real TikTok page for anything beyond that.
+      results.innerHTML = `<p style="color:var(--muted);">TikTok video browsing isn't available — only live status is shown above.</p>`;
       const name = data.channel?.title || handle;
-      const liveNote = data.channel?.live ? `${name} is live right now.` : `${name} isn't live right now.`;
-      const videoCount = data.videos?.length || 0;
-      const feedNote = videoCount ? ` Found ${videoCount} recent video${videoCount === 1 ? '' : 's'}.` : '';
-      setStatus(`${liveNote}${feedNote}`);
+      setStatus(data.channel?.live ? `${name} is live right now.` : `${name} isn't live right now.`);
     } else {
       const emptyLabel = isClips
         ? `No clips found (${rangeLabel}).`
