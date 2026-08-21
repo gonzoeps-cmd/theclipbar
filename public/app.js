@@ -411,7 +411,11 @@ function renderChannel(channel, platform, handle) {
   const live = channel.live;
   channelCard.innerHTML = `
     <div class="channel-card-top">
-      ${channel.thumbnail ? `<img src="${channel.thumbnail}" alt="${channel.title}" />` : ''}
+      ${channel.thumbnail
+        ? platform === 'tiktok'
+          ? `<a href="https://www.tiktok.com/@${encodeURIComponent((channel.username || handle).replace(/^@/, ''))}" target="_blank" rel="noopener" title="View ${channel.title || handle}'s TikTok profile" style="display:inline-flex;cursor:pointer;"><img src="${channel.thumbnail}" alt="${channel.title}" /></a>`
+          : `<img src="${channel.thumbnail}" alt="${channel.title}" />`
+        : ''}
       <div class="channel-info">
         <div class="channel-name-row">
           <span style="font-weight:600;">${channel.title || 'Unknown channel'}</span>
