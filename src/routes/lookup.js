@@ -7,7 +7,7 @@ const router = express.Router();
 const VALID_CLIP_RANGES = ['all', '24h', '7d', '30d'];
 
 router.get('/lookup', async (req, res) => {
-  const { platform, handle, type, range, page } = req.query;
+  const { platform, handle, type, range, page, channelId, skipLive } = req.query;
 
   if (!platform || !handle) {
     return res.status(400).json({ error: 'Both "platform" and "handle" query params are required.' });
@@ -28,7 +28,10 @@ router.get('/lookup', async (req, res) => {
   try {
     let result;
     if (platform === 'youtube') {
-      result = await youtube.getRecentVideos(handle, 12, page || null);
+      result = await youtube.getRecentVideos(handle, 12, page || null, {
+        channelId: channelId || null,
+        skipLive: skipLive === '1',
+      });
     } else if (twitchType === 'clips') {
       const offset = page ? parseInt(page, 10) || 0 : 0;
       result = await twitch.getRecentClips(handle, 12, clipRange, offset);
