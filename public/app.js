@@ -158,7 +158,10 @@ function updateFavoriteMeta(platform, handle, patch) {
 // so the most relevant creators show up first. Runs only when the dropdown is actually opened
 // — not on a timer — to keep API usage reasonable.
 //
-// Twitch: checks live status (cheap, no quota limit) — anyone live now goes to the top.
+// Twitch: checks live status (cheap, no quota limit) — anyone live now goes to the top — and
+// also tracks whether a new VOD has posted since we last checked (same idea as YouTube's new
+// upload tracking below), so a creator who streamed recently but isn't live right now still
+// bumps up with a NEW tag instead of just sitting in whatever order they were saved in.
 //
 // YouTube: does NOT check live status here. YouTube's live check costs 100x more of its free
 // daily quota than anything else the app does, and checking a whole favorites list of that
@@ -185,15 +188,15 @@ async function refreshFavoritesStatus(platform) {
         if (!res.ok) return { ...f, isLive: false, isNew: false };
 
         const isLive = platform === 'twitch' && !!data.channel?.live;
-        let isNew = false;
-        if (platform === 'youtube') {
-          const newestId = data.videos?.[0]?.id || null;
-          isNew = !!(f.lastSeenVideoId && newestId && f.lastSeenVideoId !== newestId);
-          const metaPatch = {};
-          if (newestId) metaPatch.lastSeenVideoId = newestId;
-          if (!f.channelId && data.channel?.id) metaPatch.channelId = data.channel.id;
-          if (Object.keys(metaPatch).length) updateFavoriteMeta(platform, f.handle, metaPatch);
+        const newestId = data.videos?.[0]?.id || null;
+        const isNew = !!(f.lastSeenVideoId && newestId && f.lastSeenVideoId !== newestId);
+        const metaPatch = {};
+        if (newestId) metaPatch.lastSeenVideoId = newestId;
+        if (platform === 'youtube' && !f.channelId && data.channel?.id) {
+          metaPatch.channelId = data.channel.id;
         }
+        if (Object.keys(metaPatch).length) updateFavoriteMeta(platform, f.handle, metaPatch);
+
         return { ...f, isLive, isNew };
       } catch {
         return { ...f, isLive: false, isNew: false };
