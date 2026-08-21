@@ -413,7 +413,7 @@ function renderChannel(channel, platform, handle) {
     <div class="channel-card-top">
       ${channel.thumbnail
         ? platform === 'tiktok'
-          ? `<a href="https://www.tiktok.com/@${encodeURIComponent((channel.username || handle).replace(/^@/, ''))}" target="_blank" rel="noopener" title="View ${channel.title || handle}'s TikTok profile" style="display:inline-flex;cursor:pointer;"><img src="${channel.thumbnail}" alt="${channel.title}" /></a>`
+          ? `<a href="https://www.tiktok.com/@${encodeURIComponent((channel.username || handle).replace(/^@/, ''))}" title="View ${channel.title || handle}'s TikTok profile" style="display:inline-flex;cursor:pointer;"><img src="${channel.thumbnail}" alt="${channel.title}" /></a>`
           : `<img src="${channel.thumbnail}" alt="${channel.title}" />`
         : ''}
       <div class="channel-info">
@@ -426,7 +426,7 @@ function renderChannel(channel, platform, handle) {
       <div class="channel-actions">
         ${live
           ? platform === 'tiktok'
-            ? `<a class="watch-live-btn" href="https://www.tiktok.com/@${encodeURIComponent((channel.username || handle).replace(/^@/, ''))}/live" target="_blank" rel="noopener">Watch live &#8599;</a>`
+            ? `<a class="watch-live-btn" href="https://www.tiktok.com/@${encodeURIComponent((channel.username || handle).replace(/^@/, ''))}/live">Watch live &#8599;</a>`
             : `<button type="button" class="watch-live-btn">Watch live</button>`
           : ''}
         <button
