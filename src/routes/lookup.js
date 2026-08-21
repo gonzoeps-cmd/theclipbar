@@ -52,20 +52,4 @@ router.get('/lookup', async (req, res) => {
   }
 });
 
-// TEMPORARY DIAGNOSTIC ROUTE — not linked from the app UI, doesn't affect /lookup at all.
-// Used to figure out where TikTok is putting the video list in its page JSON. Safe to remove
-// once that's found and wired into src/services/tiktok.js.
-router.get('/tiktok-debug', async (req, res) => {
-  const { handle } = req.query;
-  if (!handle) {
-    return res.status(400).json({ error: 'handle query param is required.' });
-  }
-  try {
-    const info = await tiktok.debugProfileShape(handle);
-    res.json(info);
-  } catch (err) {
-    res.status(502).json({ error: err.message || 'Debug lookup failed.' });
-  }
-});
-
 module.exports = router;
