@@ -154,20 +154,25 @@ function updateFavoriteMeta(platform, handle, patch) {
   saveFavoritesList(favs);
 }
 
+// "New" means posted within this window — checked directly against the video's own publish
+// date, not against whatever we happened to see last time. That way it's correct from the very
+// first check (no baseline needed) instead of only catching uploads that happen *after* the
+// app started watching.
+const NEW_UPLOAD_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 // Checks status for every saved favorite on a platform, then re-sorts that platform's dropdown
 // so the most relevant creators show up first. Runs only when the dropdown is actually opened
 // — not on a timer — to keep API usage reasonable.
 //
 // Twitch: checks live status (cheap, no quota limit) — anyone live now goes to the top — and
-// also tracks whether a new VOD has posted since we last checked (same idea as YouTube's new
-// upload tracking below), so a creator who streamed recently but isn't live right now still
-// bumps up with a NEW tag instead of just sitting in whatever order they were saved in.
+// also flags anyone whose latest VOD posted in the last 24 hours, so a creator who streamed
+// recently but isn't live right now still bumps up with a NEW tag.
 //
 // YouTube: does NOT check live status here. YouTube's live check costs 100x more of its free
 // daily quota than anything else the app does, and checking a whole favorites list of that
 // cost every time it's opened blows through the day's quota almost immediately (live status
 // still shows on the single-creator lookup page, just not across the whole favorites list).
-// Instead this only checks for a new upload (cheap), using the favorite's saved channel id
+// Instead this only checks for a recent upload (cheap), using the favorite's saved channel id
 // when we have it to skip the expensive name-search step too. Favorites saved before this
 // existed don't have a channel id yet — the first check for those falls back to the normal
 // (pricier) lookup, and then remembers the id so every check after that is cheap.
@@ -188,14 +193,15 @@ async function refreshFavoritesStatus(platform) {
         if (!res.ok) return { ...f, isLive: false, isNew: false };
 
         const isLive = platform === 'twitch' && !!data.channel?.live;
-        const newestId = data.videos?.[0]?.id || null;
-        const isNew = !!(f.lastSeenVideoId && newestId && f.lastSeenVideoId !== newestId);
-        const metaPatch = {};
-        if (newestId) metaPatch.lastSeenVideoId = newestId;
+        const latest = data.videos?.[0] || null;
+        const isNew = !!(
+          latest?.publishedAt &&
+          Date.now() - new Date(latest.publishedAt).getTime() < NEW_UPLOAD_WINDOW_MS
+        );
+
         if (platform === 'youtube' && !f.channelId && data.channel?.id) {
-          metaPatch.channelId = data.channel.id;
+          updateFavoriteMeta(platform, f.handle, { channelId: data.channel.id });
         }
-        if (Object.keys(metaPatch).length) updateFavoriteMeta(platform, f.handle, metaPatch);
 
         return { ...f, isLive, isNew };
       } catch {
