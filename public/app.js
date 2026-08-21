@@ -196,6 +196,47 @@ async function refreshFavoritesStatus(platform) {
   menu.innerHTML = withStatus.map(favoriteItemHtml).join('');
 }
 
+const FAVORITES_LAST_CHECK_KEY = 'theclipbar_favorites_last_check';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getLastCheckTimes() {
+  try {
+    const raw = localStorage.getItem(FAVORITES_LAST_CHECK_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function setLastCheckTime(platform, timestamp) {
+  try {
+    const times = getLastCheckTimes();
+    times[platform] = timestamp;
+    localStorage.setItem(FAVORITES_LAST_CHECK_KEY, JSON.stringify(times));
+  } catch {
+    // localStorage unavailable — the auto-check will just run again next time.
+  }
+}
+
+// Runs once per page load: for each platform with favorites, if it's been 24+ hours (or this
+// is the first time ever) since the last check, silently refresh live/new status in the
+// background — so whenever you actually open the dropdown that day, it's already up to date.
+// This can't guarantee an exact 7am run (nothing runs while the app is closed), but it means
+// the first time you open the app each day, the list has already been refreshed for you.
+async function autoRefreshFavoritesIfDue() {
+  const lastChecks = getLastCheckTimes();
+  const now = Date.now();
+  for (const platform of FAVORITES_PLATFORMS) {
+    const favs = getFavorites().filter((f) => f.platform === platform);
+    if (!favs.length) continue;
+    const last = lastChecks[platform] || 0;
+    if (now - last >= DAY_MS) {
+      setLastCheckTime(platform, now);
+      await refreshFavoritesStatus(platform);
+    }
+  }
+}
+
 function formatDuration(totalSeconds) {
   if (!totalSeconds || totalSeconds <= 0) return '--:--';
   const h = Math.floor(totalSeconds / 3600);
@@ -626,3 +667,4 @@ form.addEventListener('submit', (e) => {
 
 updateTwitchFieldVisibility();
 renderFavorites();
+autoRefreshFavoritesIfDue();
