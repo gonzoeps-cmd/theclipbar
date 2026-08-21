@@ -84,11 +84,28 @@ function findLiveRoom(state) {
   return state.data?.LiveRoom?.liveRoomUserInfo?.liveRoom || null;
 }
 
+// Heuristic check for the interstitial/verification pages TikTok sometimes serves instead of
+// the real page (common for datacenter/server IPs, like the one this app runs on). If a lookup
+// fails and this comes back true, it's a strong sign TikTok blocked/challenged the request
+// rather than the page shape having actually changed.
+function looksLikeBlockPage(html) {
+  return /verify you are human|captcha|Access Denied|Just a moment\.\.\.|__tt_challenge/i.test(html);
+}
+
+// TEMP DIAGNOSTIC LOGGING: helps tell apart "TikTok changed its page JSON shape" vs "TikTok
+// blocked/challenged this particular request" vs "genuinely not live" when reports come in of
+// live status being wrong or a real handle not being found. Safe to remove once TikTok lookups
+// have proven reliable — these only write to server logs, never to the API response.
 async function getProfile(username) {
   const html = await fetchHtml(`https://www.tiktok.com/@${encodeURIComponent(username)}`);
   const state = extractPageState(html);
   const user = findUserInfo(state);
   if (!user) {
+    console.error(
+      `[tiktok] profile lookup failed for "@${username}" — html length: ${html.length}, ` +
+      `page-state shape found: ${state ? state.shape : 'none'}, ` +
+      `looks like a block/verification page: ${looksLikeBlockPage(html)}`
+    );
     throw new Error(`Could not find TikTok user "@${username}"`);
   }
   return {
@@ -99,44 +116,4 @@ async function getProfile(username) {
   };
 }
 
-// Best-effort live check — any failure (network error, TikTok having changed the page shape,
-// etc.) is treated as "not live" rather than breaking the whole lookup, same as the
-// YouTube/Twitch live checks.
-async function getLiveStatus(username) {
-  try {
-    const html = await fetchHtml(`https://www.tiktok.com/@${encodeURIComponent(username)}/live`);
-    const state = extractPageState(html);
-    const room = findLiveRoom(state);
-    // TikTok uses status 2 for "currently broadcasting"; other values mean offline/ended.
-    if (!room || room.status !== 2) return null;
-    return {
-      id: String(room.id || room.roomId || ''),
-      title: room.title || null,
-      thumbnail: room.cover?.url_list?.[0] || room.cover?.urlList?.[0] || room.coverUrl || null,
-    };
-  } catch (err) {
-    console.error('[tiktok] live check failed:', err.message);
-    return null;
-  }
-}
-
-function formatChannel(profile, live = null) {
-  return {
-    id: profile.id,
-    title: profile.title,
-    thumbnail: profile.thumbnail,
-    platform: 'tiktok',
-    username: profile.username,
-    live: live ? { id: live.id, title: live.title, thumbnail: live.thumbnail, kind: 'live' } : null,
-  };
-}
-
-// TikTok doesn't offer any public, keyless way to list a creator's past videos (unlike the
-// YouTube/Twitch APIs) — so a TikTok lookup only ever returns live status, never a video list.
-async function getChannel(handleRaw) {
-  const username = cleanHandle(handleRaw);
-  const [profile, live] = await Promise.all([getProfile(username), getLiveStatus(username)]);
-  return { channel: formatChannel(profile, live), videos: [], nextPage: null };
-}
-
-module.exports = { getChannel };
+//
