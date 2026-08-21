@@ -111,6 +111,23 @@ function toggleFavoritesMenu(platform) {
   }
 }
 
+function favoriteItemHtml(f) {
+  let badge = '';
+  if (f.isLive) {
+    badge = '<span class="fav-status-badge fav-live-badge">&#9679; LIVE</span>';
+  } else if (f.isNew) {
+    badge = '<span class="fav-status-badge fav-new-badge">NEW</span>';
+  }
+  return `
+    <div class="favorite-item" data-platform="${f.platform}" data-handle="${f.handle}">
+      ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : `<span class="favorite-item-placeholder"></span>`}
+      <span class="favorite-item-name">${f.title || f.handle}</span>
+      ${badge}
+      <button type="button" class="favorite-item-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites" aria-label="Remove from favorites">&times;</button>
+    </div>
+  `;
+}
+
 function renderFavorites() {
   const favs = getFavorites();
   FAVORITES_PLATFORMS.forEach((platform) => {
@@ -124,18 +141,59 @@ function renderFavorites() {
     }
     dropdown.classList.remove('hidden');
     count.textContent = String(platformFavs.length);
-    menu.innerHTML = platformFavs
-      .map(
-        (f) => `
-      <div class="favorite-item" data-platform="${f.platform}" data-handle="${f.handle}">
-        ${f.thumbnail ? `<img src="${f.thumbnail}" alt="" />` : `<span class="favorite-item-placeholder"></span>`}
-        <span class="favorite-item-name">${f.title || f.handle}</span>
-        <button type="button" class="favorite-item-remove" data-platform="${f.platform}" data-handle="${f.handle}" title="Remove from favorites" aria-label="Remove from favorites">&times;</button>
-      </div>
-    `
-      )
-      .join('');
+    menu.innerHTML = platformFavs.map(favoriteItemHtml).join('');
   });
+}
+
+function updateFavoriteMeta(platform, handle, patch) {
+  const key = favoriteKey(platform, handle);
+  const favs = getFavorites();
+  const idx = favs.findIndex((f) => favoriteKey(f.platform, f.handle) === key);
+  if (idx === -1) return;
+  favs[idx] = { ...favs[idx], ...patch };
+  saveFavoritesList(favs);
+}
+
+// Checks live status (and, for YouTube, whether a new video has posted since we last checked)
+// for every saved favorite on a platform, then re-sorts that platform's dropdown so live
+// creators show up first, followed by anyone with a new upload. Runs only when the dropdown is
+// actually opened — not on a timer — to keep API usage reasonable, since YouTube's live check
+// costs more of its free daily quota than a normal lookup.
+async function refreshFavoritesStatus(platform) {
+  const favs = getFavorites().filter((f) => f.platform === platform);
+  if (!favs.length) return;
+
+  const withStatus = await Promise.all(
+    favs.map(async (f) => {
+      try {
+        const params = new URLSearchParams({ platform, handle: f.handle });
+        const res = await fetch(`/api/lookup?${params.toString()}`);
+        const data = await res.json();
+        if (!res.ok) return { ...f, isLive: false, isNew: false };
+
+        const isLive = !!data.channel?.live;
+        let isNew = false;
+        if (platform === 'youtube') {
+          const newestId = data.videos?.[0]?.id || null;
+          isNew = !!(f.lastSeenVideoId && newestId && f.lastSeenVideoId !== newestId);
+          if (newestId) updateFavoriteMeta(platform, f.handle, { lastSeenVideoId: newestId });
+        }
+        return { ...f, isLive, isNew };
+      } catch {
+        return { ...f, isLive: false, isNew: false };
+      }
+    })
+  );
+
+  // Live first, then new uploads, then everyone else — stable sort keeps the saved order
+  // within each group.
+  withStatus.sort((a, b) => {
+    const score = (x) => (x.isLive ? 2 : x.isNew ? 1 : 0);
+    return score(b) - score(a);
+  });
+
+  const { menu } = favoritesEls[platform];
+  menu.innerHTML = withStatus.map(favoriteItemHtml).join('');
 }
 
 function formatDuration(totalSeconds) {
@@ -499,7 +557,11 @@ FAVORITES_PLATFORMS.forEach((platform) => {
 
   toggle.addEventListener('click', (e) => {
     e.stopPropagation();
+    const wasHidden = menu.classList.contains('hidden');
     toggleFavoritesMenu(platform);
+    if (wasHidden) {
+      refreshFavoritesStatus(platform);
+    }
   });
 
   menu.addEventListener('click', (e) => {
