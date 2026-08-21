@@ -7,4 +7,6 @@
   font-size: 0.85rem;
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none;
+  display: inline-block;
 }
