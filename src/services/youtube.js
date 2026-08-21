@@ -95,9 +95,23 @@ async function getLiveVideo(channelId, key) {
   }
 }
 
-async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null) {
+// Fetches a channel resource directly by id (1 quota unit, no search needed) — used when the
+// caller already knows the channel id (e.g. a saved favorite), to avoid resolveChannel's much
+// more expensive search fallback for bare-name handles.
+async function getChannelById(channelId, key) {
+  const data = await fetchJson(
+    `${API_BASE}/channels?part=id,snippet,contentDetails&id=${encodeURIComponent(channelId)}&key=${key}`
+  );
+  if (!data.items?.length) {
+    throw new Error(`YouTube channel not found for id "${channelId}"`);
+  }
+  return data.items[0];
+}
+
+async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null, opts = {}) {
+  const { channelId = null, skipLive = false } = opts;
   const key = apiKey();
-  const channel = await resolveChannel(handleRaw);
+  const channel = channelId ? await getChannelById(channelId, key) : await resolveChannel(handleRaw);
   const uploadsPlaylistId = channel.contentDetails?.relatedPlaylists?.uploads;
   if (!uploadsPlaylistId) {
     throw new Error('Could not find an uploads playlist for this channel');
@@ -111,8 +125,10 @@ async function getRecentVideos(handleRaw, maxResults = 12, pageToken = null) {
     .map((item) => item.contentDetails?.videoId)
     .filter(Boolean);
 
-  // Only check live status on a fresh lookup (not on "Load more" pages) to conserve quota.
-  const live = pageToken ? null : await getLiveVideo(channel.id, key);
+  // Only check live status on a fresh lookup (not on "Load more" pages, and not when the
+  // caller explicitly doesn't need it) to conserve quota — a live check costs 100x more than
+  // everything else in this function combined.
+  const live = pageToken || skipLive ? null : await getLiveVideo(channel.id, key);
 
   if (!videoIds.length) {
     return { channel: formatChannel(channel, live), videos: [], nextPage: null };
@@ -152,4 +168,4 @@ function formatChannel(channel, live = null) {
   };
 }
 
-module.exports = { getRecentVideos, isoDurationToSeconds };
+module.exports = { getRecentVideos, isoDurationToSeconds, getChannelById };
