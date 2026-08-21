@@ -1,6 +1,7 @@
 const express = require('express');
 const youtube = require('../services/youtube');
 const twitch = require('../services/twitch');
+const tiktok = require('../services/tiktok');
 
 const router = express.Router();
 
@@ -12,8 +13,8 @@ router.get('/lookup', async (req, res) => {
   if (!platform || !handle) {
     return res.status(400).json({ error: 'Both "platform" and "handle" query params are required.' });
   }
-  if (!['youtube', 'twitch'].includes(platform)) {
-    return res.status(400).json({ error: 'platform must be "youtube" or "twitch".' });
+  if (!['youtube', 'twitch', 'tiktok'].includes(platform)) {
+    return res.status(400).json({ error: 'platform must be "youtube", "twitch", or "tiktok".' });
   }
   if (!handle.trim()) {
     return res.status(400).json({ error: 'handle cannot be empty.' });
@@ -32,6 +33,8 @@ router.get('/lookup', async (req, res) => {
         channelId: channelId || null,
         skipLive: skipLive === '1',
       });
+    } else if (platform === 'tiktok') {
+      result = await tiktok.getChannel(handle);
     } else if (twitchType === 'clips') {
       const offset = page ? parseInt(page, 10) || 0 : 0;
       result = await twitch.getRecentClips(handle, 12, clipRange, offset);
