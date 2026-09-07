@@ -56,8 +56,8 @@
     });
   }
 
-  function loginPrompt() {
-    say('Connect your Twitch account to clip live streams: '
+  function loginPrompt(reason) {
+    say((reason ? reason + ' ' : 'Connect your Twitch account to clip live streams: ')
       + '<a href="/api/twitch/login">Connect Twitch</a>', true);
   }
 
@@ -75,7 +75,7 @@
       body: JSON.stringify({ broadcasterId: broadcasterId })
     }).then(function (r) {
       return r.json().then(function (j) {
-        if (r.status === 401 && j.needsLogin) { var e = new Error('needs-login'); e.needsLogin = true; throw e; }
+        if (j.needsLogin) { var e = new Error(j.error || ''); e.needsLogin = true; throw e; }
         if (!r.ok) throw new Error(j.error || 'Could not create the clip.');
         return j;
       });
@@ -103,7 +103,7 @@
       });
     }).catch(function (err) {
       btn.disabled = false;
-      if (err.needsLogin) return loginPrompt();
+      if (err.needsLogin) return loginPrompt(err.message);
       say(err.message, true);
     });
   }
