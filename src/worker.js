@@ -60,9 +60,6 @@ function runYtDlp(job, outputTemplate) {
     '--no-playlist',
     '--no-warnings',
     '--no-progress',
-    // Download ONLY the requested range instead of the whole video. Critical on a small instance:
-    // a full multi-hour VOD would blow past both the disk and the time budget.
-    '--download-sections', `*${startSeconds}-${endSeconds}`,
     // NOTE: --force-keyframes-at-cuts is deliberately NOT used. It forces a full re-encode, which
     // saturated this instance's 0.5 CPU allowance; Node then couldn't answer Render's health check
     // and the platform restarted the service mid-job (silently killing the clip). Without it the
@@ -74,8 +71,24 @@ function runYtDlp(job, outputTemplate) {
     // Point at the directory so yt-dlp finds ffprobe alongside ffmpeg.
     '--ffmpeg-location', BIN_DIR,
     '-o', outputTemplate,
-    url,
   ];
+
+  // A range means "cut this section out of a long video" (a VOD). No range means the source is
+  // already short and we want all of it — that's how Twitch live clips arrive, since Twitch has
+  // done the cutting for us. Sectioning a clip that's shorter than the requested window fails, so
+  // only pass --download-sections when there's an actual range to cut.
+  if (startSeconds !== null && endSeconds !== null) {
+    args.splice(
+      3,
+      0,
+      // Download ONLY the requested range instead of the whole video. Critical on a small
+      // instance: a full multi-hour VOD would blow past both the disk and the time budget.
+      '--download-sections',
+      `*${startSeconds}-${endSeconds}`
+    );
+  }
+
+  args.push(url);
 
   return new Promise((resolve, reject) => {
     const child = spawn(YTDLP_PATH, args);
