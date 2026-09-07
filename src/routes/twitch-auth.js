@@ -28,6 +28,11 @@ const SCOPES = 'clips:edit';
 // download job is queued with a delay rather than racing it.
 const CLIP_READY_DELAY_MS = 15000;
 
+// Ask Twitch for the longest clip it allows. Without this the API publishes exactly 30 seconds,
+// which leaves no room to trim afterwards. The parameter is newer than the rest of the endpoint,
+// so requestClip() below degrades gracefully if this deployment of the API rejects it.
+const CLIP_DURATION_SECONDS = 60;
+
 let redis = null;
 function getRedis() {
   if (!redis) redis = createConnection();
@@ -193,6 +198,22 @@ router.post('/twitch/disconnect', async (req, res) => {
 
 // --- live clipping --------------------------------------------------------
 
+// One Create Clip call. duration is passed only when set, so the caller can retry without it.
+async function requestClip(clientId, accessToken, broadcasterId, duration) {
+  const params = new URLSearchParams({ broadcaster_id: String(broadcasterId) });
+  if (duration) params.set('duration', String(duration));
+
+  const res = await fetch(`https://api.twitch.tv/helix/clips?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Client-Id': clientId,
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
 router.post('/twitch/clip', async (req, res) => {
   const { broadcasterId } = req.body || {};
   if (!broadcasterId || !/^\d+$/.test(String(broadcasterId))) {
@@ -211,17 +232,24 @@ router.post('/twitch/clip', async (req, res) => {
 
   try {
     const { clientId } = creds();
-    const clipRes = await fetch(
-      `https://api.twitch.tv/helix/clips?broadcaster_id=${encodeURIComponent(broadcasterId)}`,
-      {
-        method: 'POST',
-        headers: {
-          'Client-Id': clientId,
-          Authorization: `Bearer ${token.accessToken}`,
-        },
-      }
+
+    let { res: clipRes, data } = await requestClip(
+      clientId,
+      token.accessToken,
+      broadcasterId,
+      CLIP_DURATION_SECONDS
     );
-    const data = await clipRes.json();
+
+    // A 400 here most likely means this API deployment doesn't accept "duration". Retry without it
+    // so a clip still gets made (just at Twitch's 30s default) instead of failing outright. The
+    // logged response is the only reliable way to learn what the live API actually supports.
+    if (clipRes.status === 400) {
+      console.warn(
+        `[twitch-auth] duration=${CLIP_DURATION_SECONDS} rejected, retrying without it:`,
+        JSON.stringify(data)
+      );
+      ({ res: clipRes, data } = await requestClip(clientId, token.accessToken, broadcasterId, null));
+    }
 
     if (clipRes.status === 401) {
       return res.status(401).json({ error: 'Your Twitch login expired — connect again.', needsLogin: true });
