@@ -52,7 +52,25 @@ function friendlyError(stderr) {
   }
   return 'The download failed. The source may be unavailable or blocked.';
 }
+// yt-dlp's in-progress and sidecar files. These share the job's filename prefix, so anything that
+// scans by prefix has to skip them.
+function isTempFile(name) {
+  return /\.(part|ytdl|temp|tmp)$/i.test(name);
+}
 
+function ownedFiles(jobId) {
+  return fs.readdirSync(CLIPS_DIR).filter((name) => name.startsWith(`${jobId}.`));
+}
+
+function clearJobFiles(jobId) {
+  for (const name of ownedFiles(jobId)) {
+    try {
+      fs.unlinkSync(path.join(CLIPS_DIR, name));
+    } catch {
+      // already gone
+    }
+  }
+}
 function runYtDlp(job, outputTemplate) {
   const { url, startSeconds, endSeconds } = job.data;
 
@@ -77,7 +95,7 @@ function runYtDlp(job, outputTemplate) {
   // already short and we want all of it — that's how Twitch live clips arrive, since Twitch has
   // done the cutting for us. Sectioning a clip that's shorter than the requested window fails, so
   // only pass --download-sections when there's an actual range to cut.
-  if (startSeconds !== null && endSeconds !== null) {
+  if (startSeconds != null && endSeconds != null) {
     args.splice(
       3,
       0,
@@ -135,14 +153,19 @@ async function processClip(job) {
   }
 
   await job.updateProgress(5);
+
+  // Clear anything a previous attempt left behind. Jobs retry (see attempts in src/queue.js), and
+  // a half-written file from the first try must never be mistaken for this try's output.
+  clearJobFiles(job.id);
+
   const outputTemplate = path.join(CLIPS_DIR, `${job.id}.%(ext)s`);
   await runYtDlp(job, outputTemplate);
   await job.updateProgress(90);
 
-  // yt-dlp fills in the real extension, so find whatever it actually wrote.
-  const produced = fs
-    .readdirSync(CLIPS_DIR)
-    .find((name) => name.startsWith(`${job.id}.`));
+  // yt-dlp fills in the real extension, so find whatever it actually wrote. Temp files are
+  // excluded deliberately: yt-dlp writes "<name>.mp4.part" while downloading, and that name also
+  // starts with "<id>." — renaming one of those would hand back a truncated, corrupt clip.
+  const produced = ownedFiles(job.id).find((name) => !isTempFile(name));
   if (!produced) {
     throw new Error('The clip finished downloading but no file was produced.');
   }
