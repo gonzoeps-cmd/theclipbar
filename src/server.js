@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const lookupRouter = require('./routes/lookup');
 const clipRouter = require('./routes/clip');
+const twitchAuthRouter = require('./routes/twitch-auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api', lookupRouter);
 app.use('/api', clipRouter);
+app.use('/api', twitchAuthRouter);
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
