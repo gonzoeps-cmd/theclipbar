@@ -15,7 +15,7 @@ require('dotenv').config();
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const { spawn } = require('child_process');
 const express = require('express');
 const cors = require('cors');
 const { Worker } = require('bullmq');
@@ -63,10 +63,14 @@ function runYtDlp(job, outputTemplate) {
     // Download ONLY the requested range instead of the whole video. Critical on a small instance:
     // a full multi-hour VOD would blow past both the disk and the time budget.
     '--download-sections', `*${startSeconds}-${endSeconds}`,
-    '--force-keyframes-at-cuts',
-    // Cap resolution to keep file size and memory reasonable on this instance size.
+    // NOTE: --force-keyframes-at-cuts is deliberately NOT used. It forces a full re-encode, which
+    // saturated this instance's 0.5 CPU allowance; Node then couldn't answer Render's health check
+    // and the platform restarted the service mid-job (silently killing the clip). Without it the
+    // cut is a stream copy, so it may start up to a keyframe early - a fine trade for finishing.
     '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
     '--merge-output-format', 'mp4',
+    // Keep ffmpeg single-threaded for the same reason: leave CPU for the health check.
+    '--postprocessor-args', 'ffmpeg:-threads 1',
     // Point at the directory so yt-dlp finds ffprobe alongside ffmpeg.
     '--ffmpeg-location', BIN_DIR,
     '-o', outputTemplate,
@@ -74,19 +78,38 @@ function runYtDlp(job, outputTemplate) {
   ];
 
   return new Promise((resolve, reject) => {
-    execFile(
-      YTDLP_PATH,
-      args,
-      { timeout: JOB_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          console.error(`[worker] job ${job.id} yt-dlp failed:`, (stderr || err.message).slice(-2000));
-          const wrapped = new Error(friendlyError(stderr || err.message));
-          return reject(wrapped);
-        }
-        resolve(stdout);
+    const child = spawn(YTDLP_PATH, args);
+    // Keep only the tail — enough to classify the failure without flooding memory.
+    let tail = '';
+    const capture = (chunk) => {
+      const text = chunk.toString();
+      tail = (tail + text).slice(-4000);
+      // Stream it to the logs live. If the platform kills this instance mid-job we still get to
+      // see how far the download actually got, instead of losing everything with the process.
+      for (const line of text.split('\n')) {
+        if (line.trim()) console.log(`[worker] job ${job.id} yt-dlp | ${line.trim()}`);
       }
-    );
+    };
+
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+
+    const timer = setTimeout(() => {
+      console.error(`[worker] job ${job.id} exceeded ${JOB_TIMEOUT_MS}ms, killing yt-dlp`);
+      child.kill('SIGKILL');
+    }, JOB_TIMEOUT_MS);
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Could not start the downloader: ${err.message}`));
+    });
+
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve();
+      console.error(`[worker] job ${job.id} yt-dlp exited (code=${code} signal=${signal})`);
+      reject(new Error(friendlyError(tail)));
+    });
   });
 }
 
@@ -202,13 +225,38 @@ const connection = createConnection();
 if (!connection) {
   console.error('[worker] REDIS_URL is not set — the queue consumer will not start.');
 } else {
-  const worker = new Worker(QUEUE_NAME, processClip, { connection, concurrency: 1 });
+  const worker = new Worker(QUEUE_NAME, processClip, {
+    connection,
+    concurrency: 1,
+    // A job orphaned by a platform restart is recoverable, so allow it to be picked back up
+    // instead of being failed the first time it stalls. lockDuration gives extra slack in case
+    // the download starves the event loop briefly.
+    maxStalledCount: 3,
+    lockDuration: 60000,
+  });
   worker.on('failed', (job, err) => {
     console.error(`[worker] job ${job?.id} failed: ${err.message}`);
   });
   worker.on('ready', () => console.log('[worker] connected to queue, waiting for clip jobs'));
   console.log('[worker] queue consumer starting...');
 }
+
+// The instance was being restarted mid-job with nothing in the logs. These make the reason
+// visible: a platform stop arrives as SIGTERM, a code bug as an exception/rejection.
+process.on('SIGTERM', () => {
+  console.error('[worker] SIGTERM received - the platform is stopping this instance');
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  console.error('[worker] SIGINT received');
+  process.exit(0);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[worker] uncaught exception:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[worker] unhandled rejection:', err && err.stack ? err.stack : err);
+});
 
 sweepOldClips();
 setInterval(sweepOldClips, 15 * 60 * 1000);
