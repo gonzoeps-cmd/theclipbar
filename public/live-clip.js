@@ -16,8 +16,16 @@
     + '.live-clip-msg{font-size:.8rem;color:var(--muted);margin-top:8px;line-height:1.4}'
     + '.live-clip-msg.error{color:#ff6b6b}'
     + '.live-clip-msg a{color:var(--accent)}'
-    + '.live-clip-dl{display:inline-block;margin-top:8px;background:#2ea043;color:#fff;'
-    + 'text-decoration:none;padding:8px 14px;border-radius:6px;font-size:.82rem}';
+    + '.live-clip-dl{display:inline-block;background:#2ea043;color:#fff;'
+    + 'text-decoration:none;padding:8px 14px;border-radius:6px;font-size:.82rem}'
+    + '.live-clip-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}'
+    + '.live-clip-edit{display:inline-block;background:transparent;border:1px solid var(--border);'
+    + 'color:var(--text);text-decoration:none;padding:7px 13px;border-radius:6px;font-size:.82rem}'
+    + '.live-clip-edit:hover{border-color:var(--accent);color:var(--accent)}'
+    + '.live-clip-again{background:transparent;border:1px solid var(--border);color:var(--muted);'
+    + 'padding:7px 13px;border-radius:6px;font-size:.82rem;cursor:pointer}'
+    + '.live-clip-again:hover{border-color:var(--accent);color:var(--accent)}'
+    + '.live-clip-hint{font-size:.75rem;color:var(--muted);margin-top:6px;line-height:1.4}';
   var s = document.createElement('style');
   s.textContent = css;
   document.head.appendChild(s);
@@ -61,12 +69,92 @@
       + '<a href="/api/twitch/login">Connect Twitch</a>', true);
   }
 
+  function clearResult() {
+    var old = card.querySelector('.live-clip-row');
+    if (old) old.remove();
+    var hint = card.querySelector('.live-clip-hint');
+    if (hint) hint.remove();
+  }
+
+  // Twitch publishes only ~30s of its ~90s capture by default. The edit link opens Twitch's own
+  // trimmer where any 5-60s slice can be chosen; re-downloading afterwards picks up that version,
+  // since the edited clip keeps the same URL.
+  function showResult(job, downloadUrl) {
+    say('Clip ready.');
+    clearResult();
+
+    var row = document.createElement('div');
+    row.className = 'live-clip-row';
+
+    var dl = document.createElement('a');
+    dl.className = 'live-clip-dl';
+    dl.href = downloadUrl;
+    dl.textContent = 'Download clip';
+    dl.setAttribute('download', '');
+    row.appendChild(dl);
+
+    if (job.editUrl) {
+      var edit = document.createElement('a');
+      edit.className = 'live-clip-edit';
+      edit.href = job.editUrl;
+      edit.target = '_blank';
+      edit.rel = 'noopener';
+      edit.textContent = 'Adjust on Twitch';
+      row.appendChild(edit);
+
+      var again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'live-clip-again';
+      again.textContent = 'Download again';
+      again.addEventListener('click', function () { redownload(job, again); });
+      row.appendChild(again);
+    }
+
+    card.appendChild(row);
+
+    if (job.editUrl) {
+      var hint = document.createElement('div');
+      hint.className = 'live-clip-hint';
+      hint.textContent =
+        'This is Twitch\u2019s default ~30s cut. "Adjust on Twitch" opens their trimmer '
+        + '(any 5-60s of the ~90s it captured, good for 24h) \u2014 save there, then "Download again".';
+      card.appendChild(hint);
+    }
+  }
+
+  function redownload(job, btn) {
+    btn.disabled = true;
+    say('Fetching your edited clip from Twitch...');
+
+    fetch('/api/twitch/redownload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clipId: job.clipId })
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error(j.error || 'Could not queue the download.');
+        return j;
+      });
+    }).then(function (next) {
+      return poll(next.statusUrl, function () { say('Downloading your edited clip...'); })
+        .then(function (out) {
+          btn.disabled = false;
+          if (!out.ok) return say(out.error, true);
+          showResult(job, next.downloadUrl);
+        });
+    }).catch(function (err) {
+      btn.disabled = false;
+      say(err.message, true);
+    });
+  }
+
   function clipLive(btn) {
     var fav = card.querySelector('.fav-btn');
     var broadcasterId = fav && fav.dataset.channelId;
     if (!broadcasterId) return say("Couldn't work out which channel this is.", true);
 
     btn.disabled = true;
+    clearResult();
     say('Asking Twitch to cut the clip...');
 
     fetch('/api/twitch/clip', {
@@ -93,13 +181,7 @@
             + 'The clip still exists on Twitch &rarr;</a>', true);
           return;
         }
-        say('Clip ready.');
-        var a = document.createElement('a');
-        a.className = 'live-clip-dl';
-        a.href = job.downloadUrl;
-        a.textContent = 'Download clip';
-        a.setAttribute('download', '');
-        card.appendChild(a);
+        showResult(job, job.downloadUrl);
       });
     }).catch(function (err) {
       btn.disabled = false;
