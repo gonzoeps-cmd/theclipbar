@@ -31,7 +31,8 @@ const CLIP_READY_DELAY_MS = 15000;
 // Ask Twitch for the longest clip it allows. Without this the API publishes exactly 30 seconds,
 // which leaves no room to trim afterwards. The parameter is newer than the rest of the endpoint,
 // so requestClip() below degrades gracefully if this deployment of the API rejects it.
-const CLIP_DURATION_SECONDS = 60;
+const CLIP_DURATION_SECONDS = Number(process.env.CLIP_DURATION_SECONDS) || null;
+
 
 let redis = null;
 function getRedis() {
