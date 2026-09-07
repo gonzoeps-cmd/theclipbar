@@ -248,9 +248,12 @@ router.post('/twitch/clip', async (req, res) => {
       return res.status(502).json({ error: data.message || 'Twitch would not create the clip.' });
     }
 
-    const clipId = data.data[0].id;
+        const clipId = data.data[0].id;
     const clipUrl = `https://clips.twitch.tv/${clipId}`;
-
+    // Twitch captures ~90s (about 85s before the request) but only publishes ~30s of it by
+    // default. edit_url opens Twitch's trimmer, where any 5-60s slice of that window can be
+    // chosen. Valid for 24 hours. Surfaced so a clip can be widened before downloading.
+    const editUrl = data.data[0].edit_url || `${clipUrl}/edit`;
     const queue = getQueue();
     if (!queue) {
       // The clip still exists on Twitch even if we can't queue the download.
@@ -269,6 +272,7 @@ router.post('/twitch/clip', async (req, res) => {
     res.status(202).json({
       clipId,
       clipUrl,
+      editUrl,
       jobId: job.id,
       statusUrl: `${workerUrl}/status/${job.id}`,
       downloadUrl: `${workerUrl}/clips/${job.id}.mp4`,
@@ -276,6 +280,40 @@ router.post('/twitch/clip', async (req, res) => {
   } catch (err) {
     console.error('[twitch-auth] clip failed:', err.message);
     res.status(502).json({ error: 'Could not create the clip.' });
+  }
+});
+
+// After trimming on Twitch, the same clip URL serves the edited version — so re-running the
+// download is all that's needed to get the longer/retimed cut.
+router.post('/twitch/redownload', async (req, res) => {
+  const { clipId } = req.body || {};
+  // Twitch clip slugs are word characters and dashes. Validating here keeps this endpoint from
+  // being turned into a downloader for arbitrary URLs.
+  if (!clipId || !/^[A-Za-z0-9_-]{1,120}$/.test(String(clipId))) {
+    return res.status(400).json({ error: 'A valid "clipId" is required.' });
+  }
+
+  const queue = getQueue();
+  if (!queue) return res.status(503).json({ error: 'Downloading is not configured.' });
+
+  try {
+    const job = await queue.add('clip', {
+      url: `https://clips.twitch.tv/${clipId}`,
+      startSeconds: null,
+      endSeconds: null,
+      platform: 'twitch',
+      title: `Live clip ${clipId}`,
+    });
+
+    const workerUrl = (process.env.WORKER_URL || '').replace(/\/$/, '');
+    res.status(202).json({
+      jobId: job.id,
+      statusUrl: `${workerUrl}/status/${job.id}`,
+      downloadUrl: `${workerUrl}/clips/${job.id}.mp4`,
+    });
+  } catch (err) {
+    console.error('[twitch-auth] redownload failed:', err.message);
+    res.status(502).json({ error: 'Could not queue the download.' });
   }
 });
 
