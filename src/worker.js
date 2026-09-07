@@ -19,11 +19,12 @@ const { execFile } = require('child_process');
 const express = require('express');
 const cors = require('cors');
 const { Worker } = require('bullmq');
-const ffmpegPath = require('ffmpeg-static');
 const { QUEUE_NAME, createConnection, getQueue } = require('./queue');
 
 const PORT = process.env.PORT || 3001;
-const YTDLP_PATH = path.join(__dirname, '..', 'bin', 'yt-dlp');
+const BIN_DIR = path.join(__dirname, '..', 'bin');
+const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp');
+const FFMPEG_PATH = path.join(BIN_DIR, 'ffmpeg');
 const CLIPS_DIR = path.join(os.tmpdir(), 'theclipbar-clips');
 const CLIP_TTL_MS = 60 * 60 * 1000; // sweep finished clips after an hour
 const JOB_TIMEOUT_MS = 10 * 60 * 1000; // don't let a stuck download run forever
@@ -66,7 +67,8 @@ function runYtDlp(job, outputTemplate) {
     // Cap resolution to keep file size and memory reasonable on this instance size.
     '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
     '--merge-output-format', 'mp4',
-    '--ffmpeg-location', ffmpegPath,
+    // Point at the directory so yt-dlp finds ffprobe alongside ffmpeg.
+    '--ffmpeg-location', BIN_DIR,
     '-o', outputTemplate,
     url,
   ];
@@ -92,8 +94,8 @@ async function processClip(job) {
   if (!fs.existsSync(YTDLP_PATH)) {
     throw new Error('The clip downloader is not installed on the server (yt-dlp missing).');
   }
-  if (!ffmpegPath) {
-    throw new Error('ffmpeg is not available on the server.');
+  if (!fs.existsSync(FFMPEG_PATH)) {
+    throw new Error('ffmpeg is not installed on the server.');
   }
 
   await job.updateProgress(5);
@@ -149,7 +151,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     ytdlp: fs.existsSync(YTDLP_PATH),
-    ffmpeg: Boolean(ffmpegPath),
+    ffmpeg: fs.existsSync(FFMPEG_PATH),
     redis: Boolean(process.env.REDIS_URL),
   });
 });
@@ -191,7 +193,7 @@ app.get('/clips/:file', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[worker] http listening on ${PORT}`);
-  console.log(`[worker] yt-dlp: ${fs.existsSync(YTDLP_PATH) ? 'ready' : 'MISSING'} | ffmpeg: ${ffmpegPath ? 'ready' : 'MISSING'}`);
+  console.log(`[worker] yt-dlp: ${fs.existsSync(YTDLP_PATH) ? 'ready' : 'MISSING'} | ffmpeg: ${fs.existsSync(FFMPEG_PATH) ? 'ready' : 'MISSING'}`);
 });
 
 // --- queue consumer --------------------------------------------------------
