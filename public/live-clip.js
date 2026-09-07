@@ -116,8 +116,9 @@
       var hint = document.createElement('div');
       hint.className = 'live-clip-hint';
       hint.textContent =
-        'This is Twitch\u2019s default ~30s cut. "Adjust on Twitch" opens their trimmer '
-        + '(any 5-60s of the ~90s it captured, good for 24h) \u2014 save there, then "Download again".';
+                'Clips are requested at 60s so you have room to trim down. "Adjust on Twitch" opens '
+        + 'their editor \u2014 save there, then "Download again". Twitch\u2019s editor has been '
+        + 'unreliable lately, so trimming in your own editor is the safer bet.';
       card.appendChild(hint);
     }
   }
