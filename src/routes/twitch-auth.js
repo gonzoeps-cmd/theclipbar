@@ -244,7 +244,7 @@ router.post('/twitch/clip', async (req, res) => {
     // A 400 here most likely means this API deployment doesn't accept "duration". Retry without it
     // so a clip still gets made (just at Twitch's 30s default) instead of failing outright. The
     // logged response is the only reliable way to learn what the live API actually supports.
-        if (clipRes.status === 400 && CLIP_DURATION_SECONDS) {
+        
 if (clipRes.status === 400) {
       console.warn(
         `[twitch-auth] duration=${CLIP_DURATION_SECONDS} rejected, retrying without it:`,
