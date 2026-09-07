@@ -170,7 +170,8 @@
       });
     }).then(function (job) {
       // Twitch needs a moment to process a brand new clip, so the download job starts delayed.
-      say('Twitch made the clip. Downloading it now - this takes about 20 seconds...');
+            say('Twitch made the clip. Waiting for Twitch to render it, then downloading - up to a couple of minutes for a 60s clip...');
+
       return poll(job.statusUrl, function (state) {
         say(state === 'active'
           ? 'Downloading your clip...'
