@@ -293,7 +293,73 @@ app.get('/clips/:file', (req, res) => {
   }
   res.download(full, name);
 });
+// Trim a clip that's already been downloaded. Unlike a clip job this needs no network and no
+// queue: the source file is sitting in CLIPS_DIR and the cut is a stream copy, so it finishes in
+// about a second and can answer the request inline.
+//
+// Stream copy (rather than re-encoding) is a deliberate choice. Re-encoding is what saturated this
+// instance's CPU and got the service killed mid-job before. The trade-off is that ffmpeg can only
+// cut on keyframes, so the result can land within a second or so of the requested marks.
+app.post('/trim', express.json(), (req, res) => {
+  const { file, start, end } = req.body || {};
 
+  // Only ever read a clip out of CLIPS_DIR — never an arbitrary path.
+  const name = path.basename(String(file || ''));
+  if (!/^[A-Za-z0-9_-]+\.mp4$/.test(name)) {
+    return res.status(400).json({ error: 'Bad clip name.' });
+  }
+  const source = path.join(CLIPS_DIR, name);
+  if (!fs.existsSync(source)) {
+    return res.status(404).json({ error: 'That clip is no longer on the server — make a new one.' });
+  }
+
+  const startSeconds = Number(start);
+  const endSeconds = Number(end);
+  if (
+    !Number.isFinite(startSeconds) ||
+    !Number.isFinite(endSeconds) ||
+    startSeconds < 0 ||
+    endSeconds <= startSeconds
+  ) {
+    return res.status(400).json({ error: 'Invalid trim range.' });
+  }
+
+  const outName = `${name.replace(/\.mp4$/, '')}-t${Date.now().toString(36)}.mp4`;
+  const outPath = path.join(CLIPS_DIR, outName);
+
+  const args = [
+    '-y',
+    // Seeking before -i is the fast path; with stream copy it snaps to the nearest keyframe.
+    '-ss', String(startSeconds),
+    '-to', String(endSeconds),
+    '-i', source,
+    '-c', 'copy',
+    '-avoid_negative_ts', 'make_zero',
+    '-threads', '1',
+    outPath,
+  ];
+
+  const child = spawn(FFMPEG_PATH, args);
+  let tail = '';
+  child.stderr.on('data', (chunk) => {
+    tail = (tail + chunk.toString()).slice(-2000);
+  });
+
+  child.on('error', (err) => {
+    console.error('[worker] trim could not start:', err.message);
+    res.status(500).json({ error: 'Could not start the trimmer.' });
+  });
+
+  child.on('close', (code) => {
+    if (code !== 0 || !fs.existsSync(outPath)) {
+      console.error(`[worker] trim failed (code=${code}):`, tail.slice(-800));
+      return res.status(502).json({ error: 'Trimming failed.' });
+    }
+    const { size } = fs.statSync(outPath);
+    console.log(`[worker] trimmed ${name} -> ${outName} (${startSeconds}s-${endSeconds}s, ${size} bytes)`);
+    res.json({ file: outName, bytes: size });
+  });
+});
 app.listen(PORT, () => {
   console.log(`[worker] http listening on ${PORT}`);
   console.log(`[worker] yt-dlp: ${fs.existsSync(YTDLP_PATH) ? 'ready' : 'MISSING'} | ffmpeg: ${fs.existsSync(FFMPEG_PATH) ? 'ready' : 'MISSING'}`);
