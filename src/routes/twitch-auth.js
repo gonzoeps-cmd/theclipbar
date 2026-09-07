@@ -118,7 +118,12 @@ router.get('/twitch/login', async (req, res) => {
       client_id: clientId,
       redirect_uri: redirectUri(req),
       response_type: 'code',
-      scope: SCOPES,
+            scope: SCOPES,
+      state,
+      // Without this Twitch silently reuses whichever account already approved the app, which
+      // makes it impossible to switch accounts after connecting the wrong one.
+      force_verify: 'true',
+    });
       state,
     });
     res.redirect(`https://id.twitch.tv/oauth2/authorize?${params.toString()}`);
@@ -224,7 +229,19 @@ router.post('/twitch/clip', async (req, res) => {
       return res.status(401).json({ error: 'Your Twitch login expired — connect again.', needsLogin: true });
     }
     if (clipRes.status === 404) {
+          if (clipRes.status === 404) {
       return res.status(400).json({ error: "That channel isn't live right now, so there's nothing to clip." });
+    }
+    // Twitch accepted the token but refuses the action. In practice this is almost always the
+    // connected account rather than the channel: Twitch blocks clip creation from accounts that
+    // are new or unverified. Offer a reconnect so a different account can be used.
+    if (clipRes.status === 403) {
+      return res.status(403).json({
+        error:
+          'Twitch will not let the connected account create clips (this usually means it is a new or unverified account). Connect the Twitch account you normally clip with:',
+        needsLogin: true,
+      });
+    }el isn't live right now, so there's nothing to clip." });
     }
     if (!clipRes.ok || !data.data || !data.data[0]) {
       console.error('[twitch-auth] create clip failed:', clipRes.status, data);
