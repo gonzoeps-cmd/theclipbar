@@ -31,7 +31,11 @@ function getQueue() {
   queue = new Queue(QUEUE_NAME, {
     connection,
     defaultJobOptions: {
-      attempts: 1,
+      // Retry once. The worker is a small instance that Render can restart under a running job
+      // (a deploy, a health-check blip), which orphans it — a single retry recovers from that
+      // without hammering the source when a clip genuinely can't be made.
+      attempts: 2,
+      backoff: { type: 'fixed', delay: 5000 },
       removeOnComplete: { age: 60 * 60 },
       removeOnFail: { age: 60 * 60 },
     },
