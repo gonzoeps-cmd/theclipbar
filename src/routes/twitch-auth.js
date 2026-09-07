@@ -244,7 +244,8 @@ router.post('/twitch/clip', async (req, res) => {
     // A 400 here most likely means this API deployment doesn't accept "duration". Retry without it
     // so a clip still gets made (just at Twitch's 30s default) instead of failing outright. The
     // logged response is the only reliable way to learn what the live API actually supports.
-    if (clipRes.status === 400) {
+        if (clipRes.status === 400 && CLIP_DURATION_SECONDS) {
+if (clipRes.status === 400) {
       console.warn(
         `[twitch-auth] duration=${CLIP_DURATION_SECONDS} rejected, retrying without it:`,
         JSON.stringify(data)
@@ -273,7 +274,12 @@ router.post('/twitch/clip', async (req, res) => {
       return res.status(502).json({ error: data.message || 'Twitch would not create the clip.' });
     }
 
-    const clipId = data.data[0].id;
+        console.log(
+      `[twitch-auth] clip created (duration requested: ${CLIP_DURATION_SECONDS || 'default'}):`,
+      JSON.stringify(data.data[0])
+    );
+
+const clipId = data.data[0].id;
     const clipUrl = `https://clips.twitch.tv/${clipId}`;
     // Twitch captures ~90s (about 85s before the request) but only publishes ~30s of it by
     // default. edit_url opens Twitch's trimmer, where any 5-60s slice of that window can be
