@@ -118,13 +118,11 @@ router.get('/twitch/login', async (req, res) => {
       client_id: clientId,
       redirect_uri: redirectUri(req),
       response_type: 'code',
-            scope: SCOPES,
+      scope: SCOPES,
       state,
       // Without this Twitch silently reuses whichever account already approved the app, which
       // makes it impossible to switch accounts after connecting the wrong one.
       force_verify: 'true',
-    });
-      state,
     });
     res.redirect(`https://id.twitch.tv/oauth2/authorize?${params.toString()}`);
   } catch (err) {
@@ -229,7 +227,6 @@ router.post('/twitch/clip', async (req, res) => {
       return res.status(401).json({ error: 'Your Twitch login expired — connect again.', needsLogin: true });
     }
     if (clipRes.status === 404) {
-          if (clipRes.status === 404) {
       return res.status(400).json({ error: "That channel isn't live right now, so there's nothing to clip." });
     }
     // Twitch accepted the token but refuses the action. In practice this is almost always the
@@ -241,19 +238,19 @@ router.post('/twitch/clip', async (req, res) => {
           'Twitch will not let the connected account create clips (this usually means it is a new or unverified account). Connect the Twitch account you normally clip with:',
         needsLogin: true,
       });
-    }el isn't live right now, so there's nothing to clip." });
     }
     if (!clipRes.ok || !data.data || !data.data[0]) {
       console.error('[twitch-auth] create clip failed:', clipRes.status, data);
       return res.status(502).json({ error: data.message || 'Twitch would not create the clip.' });
     }
 
-        const clipId = data.data[0].id;
+    const clipId = data.data[0].id;
     const clipUrl = `https://clips.twitch.tv/${clipId}`;
     // Twitch captures ~90s (about 85s before the request) but only publishes ~30s of it by
     // default. edit_url opens Twitch's trimmer, where any 5-60s slice of that window can be
     // chosen. Valid for 24 hours. Surfaced so a clip can be widened before downloading.
     const editUrl = data.data[0].edit_url || `${clipUrl}/edit`;
+
     const queue = getQueue();
     if (!queue) {
       // The clip still exists on Twitch even if we can't queue the download.
