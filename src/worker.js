@@ -29,6 +29,12 @@ const CLIPS_DIR = path.join(os.tmpdir(), 'theclipbar-clips');
 const CLIP_TTL_MS = 60 * 60 * 1000; // sweep finished clips after an hour
 const JOB_TIMEOUT_MS = 10 * 60 * 1000; // don't let a stuck download run forever
 
+// Twitch returns a clip's metadata as soon as it's created, but the actual video file lands a while
+// later — and the longer the clip, the longer that takes. Downloading too eagerly just 404s on the
+// media URL. These are the waits between attempts (~3 minutes total), which comfortably covers a
+// 60s clip without giving up on it.
+const CLIP_RENDER_WAITS_MS = [15000, 20000, 30000, 45000, 60000];
+
 fs.mkdirSync(CLIPS_DIR, { recursive: true });
 
 // --- clip production -------------------------------------------------------
@@ -50,8 +56,22 @@ function friendlyError(stderr) {
   if (/subscribe to this channel|requires authentication|login required/i.test(text)) {
     return 'That video requires being signed in to view.';
   }
+  if (/unable to download video data|HTTP Error 404/i.test(text)) {
+    return 'Twitch is still processing this clip. It exists — give it a minute and download again.';
+  }
   return 'The download failed. The source may be unavailable or blocked.';
 }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Twitch says "404 Not Found" for the media file of a clip it hasn't finished rendering. That's a
+// wait-and-retry, not a real failure — unlike a deleted video, which fails at metadata lookup.
+function looksLikeClipNotRendered(rawOutput) {
+  return /unable to download video data|HTTP Error 404/i.test(rawOutput || '');
+}
+
 // yt-dlp's in-progress and sidecar files. These share the job's filename prefix, so anything that
 // scans by prefix has to skip them.
 function isTempFile(name) {
@@ -71,6 +91,7 @@ function clearJobFiles(jobId) {
     }
   }
 }
+
 function runYtDlp(job, outputTemplate) {
   const { url, startSeconds, endSeconds } = job.data;
 
@@ -139,7 +160,9 @@ function runYtDlp(job, outputTemplate) {
       clearTimeout(timer);
       if (code === 0) return resolve();
       console.error(`[worker] job ${job.id} yt-dlp exited (code=${code} signal=${signal})`);
-      reject(new Error(friendlyError(tail)));
+      const failure = new Error(friendlyError(tail));
+      failure.raw = tail; // retry logic needs the real output, not the friendly summary
+      reject(failure);
     });
   });
 }
@@ -159,7 +182,28 @@ async function processClip(job) {
   clearJobFiles(job.id);
 
   const outputTemplate = path.join(CLIPS_DIR, `${job.id}.%(ext)s`);
-  await runYtDlp(job, outputTemplate);
+
+  // Twitch live clips are queued the moment they're created, so the first attempt often beats
+  // Twitch's own rendering. Wait it out rather than reporting a failure for a clip that is fine.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await runYtDlp(job, outputTemplate);
+      break;
+    } catch (err) {
+      const isTwitchClip = /clips\.twitch\.tv/i.test(job.data.url || '');
+      const canWait = isTwitchClip && looksLikeClipNotRendered(err.raw) && attempt < CLIP_RENDER_WAITS_MS.length;
+      if (!canWait) throw err;
+
+      const wait = CLIP_RENDER_WAITS_MS[attempt];
+      console.log(
+        `[worker] job ${job.id} clip not rendered yet, waiting ${wait}ms (attempt ${attempt + 1}/${CLIP_RENDER_WAITS_MS.length})`
+      );
+      await job.updateProgress(10 + attempt * 10);
+      clearJobFiles(job.id); // drop any stub the failed attempt left behind
+      await sleep(wait);
+    }
+  }
+
   await job.updateProgress(90);
 
   // yt-dlp fills in the real extension, so find whatever it actually wrote. Temp files are
