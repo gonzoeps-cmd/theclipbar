@@ -5,10 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TheClipBar</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo.png" />
+  <style>
+    /* Branding lives here rather than in style.css so the stylesheet stays untouched. */
+
+    .brand {
+      margin: 0;
+      line-height: 0;
+    }
+
+    /* Scales down on narrow screens instead of overflowing. */
+    .brand img {
+      width: min(300px, 72vw);
+      height: auto;
+    }
+
+    /* Logo watermark: one large fixed copy behind everything. Kept at very low opacity so it reads
+       as texture and never competes with the cards on top of it. z-index -1 puts it above the page
+       background but below all content; pointer-events:none keeps it from swallowing taps. */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: 0.05;
+      background: url('logo.png') no-repeat center center;
+      background-size: min(680px, 90vw) auto;
+    }
+  </style>
 </head>
 <body>
   <header class="topbar">
-    <h1>TheClipBar</h1>
+    <h1 class="brand"><img src="logo.png" alt="TheClipBar" /></h1>
     <p class="tagline">Paste a channel handle, find recent videos, clip the good parts.</p>
   </header>
 
@@ -85,6 +114,5 @@
   <script src="clip-ui.js"></script>
   <script src="live-clip.js"></script>
   <script src="trim-ui.js"></script>
-
 </body>
 </html>
