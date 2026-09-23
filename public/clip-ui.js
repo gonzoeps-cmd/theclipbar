@@ -1,32 +1,40 @@
 // Clipping UI (Phase 2). Self-contained on purpose: hooks onto the cards app.js renders and
 // injects its own styles, so nothing in the existing lookup/favorites code has to change.
-// Flow: pick start/end -> POST /api/clip (queues it) -> poll worker /status -> download link.
+//
+// The panel is built around one decision: where does the clip start. You drag a single handle,
+// preview from there, pick how long you want, and take it. An end-point slider was the earlier
+// design and meant fussing with two handles that could cross each other; a length is easier to
+// think about than an out-point, and the trimmer handles fine-tuning afterwards.
+//
+// Flow: pick a start -> POST /api/clip (queues it) -> poll worker /status -> download link.
 (function () {
   'use strict';
   var results = document.getElementById('results');
   if (!results) return;
 
   var POLL_MS = 2000, TIMEOUT_MS = 600000, MAX_SECS = 300; // MAX_SECS matches src/routes/clip.js
+  var LENGTHS = [15, 30, 60, 120]; // every option stays under MAX_SECS
+  var DEFAULT_LENGTH = 30;
 
   var css = '.clip-btn{background:transparent;border:1px solid var(--border);color:var(--muted);'
     + 'padding:4px 9px;border-radius:6px;font-size:.76rem;cursor:pointer;white-space:nowrap}'
     + '.clip-btn:hover,.clip-btn.open{color:var(--accent);border-color:var(--accent)}'
     + '.clip-panel{margin-top:10px;padding-top:10px;border-top:1px solid var(--border);'
-    + 'display:flex;flex-direction:column;gap:8px}'
-    + '.clip-times{display:flex;gap:8px}'
-    + '.clip-times label{flex:1;display:flex;flex-direction:column;gap:4px;font-size:.72rem;color:var(--muted)}'
-    + '.clip-times input{background:#0d0f14;border:1px solid var(--border);color:var(--text);'
-    + 'padding:7px 9px;border-radius:6px;font-size:.85rem;width:100%}'
-    // Slider rows. The typed box stays alongside each slider: dragging is quick, typing is exact,
-    // and on a long VOD one slider pixel is worth several seconds so the box is the way back.
+    + 'display:flex;flex-direction:column;gap:10px}'
     + '.clip-slider-row{display:flex;flex-direction:column;gap:5px}'
     + '.clip-slider-head{display:flex;justify-content:space-between;align-items:center;gap:8px;'
     + 'font-size:.72rem;color:var(--muted)}'
     + '.clip-slider-head input{background:#0d0f14;border:1px solid var(--border);color:var(--text);'
-    + 'padding:4px 7px;border-radius:5px;font-size:.8rem;width:86px;text-align:right}'
+    + 'padding:4px 7px;border-radius:5px;font-size:.8rem;width:92px;text-align:right}'
     + '.clip-slider-row input[type=range]{width:100%;accent-color:var(--accent);margin:0}'
-    + '.clip-length{font-size:.72rem;color:var(--muted)}'
-    + '.clip-length.over{color:#ff6b6b}'
+    // Length choices as one segmented row, so the selected length is visible at a glance rather
+    // than hidden in a dropdown.
+    + '.clip-len-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}'
+    + '.clip-len-label{font-size:.72rem;color:var(--muted);margin-right:2px}'
+    + '.clip-len-btn{background:transparent;border:1px solid var(--border);color:var(--muted);'
+    + 'padding:5px 11px;border-radius:99px;font-size:.78rem;cursor:pointer}'
+    + '.clip-len-btn:hover{color:var(--text)}'
+    + '.clip-len-btn.active{border-color:var(--accent);color:var(--accent)}'
     + '.clip-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}'
     + '.clip-make-btn{background:var(--accent);color:#fff;border:none;padding:8px 14px;'
     + 'border-radius:6px;font-size:.82rem;cursor:pointer}'
@@ -60,67 +68,75 @@
     var n = Math.max(0, Math.round(total));
     var h = Math.floor(n / 3600);
     var m = Math.floor((n % 3600) / 60);
-    var s = String(n % 60).padStart(2, '0');
-    return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + s : m + ':' + s;
+    var sec = String(n % 60).padStart(2, '0');
+    return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + sec : m + ':' + sec;
+  }
+
+  // "30s", "1min" — how a length reads on a button, as opposed to a position on the timeline.
+  function lenLabel(secs) {
+    return secs >= 60 && secs % 60 === 0 ? (secs / 60) + 'min' : secs + 's';
   }
 
   // The card already shows the video's length in its corner badge, so the slider range comes from
   // there rather than from a change to app.js. Unknown lengths render as "--:--", which parseTime
-  // rejects, and that's the signal to fall back to plain typed boxes.
+  // rejects, and that's the signal to drop the slider and just take a typed start time.
   function durationOf(card) {
     var badge = card.querySelector('.duration-badge');
     var secs = badge ? parseTime(badge.textContent) : null;
     return secs && secs > 0 ? secs : null;
   }
 
-  // Wire a slider to its typed box so either one can drive the value, keeping start < end and the
-  // length readout honest. Returns nothing; the panel's .clip-start/.clip-end boxes stay the single
-  // source of truth, which is what createClip already reads.
-  function wireSliders(panel, duration) {
+  // Keep the slider, the typed box, the length choice and both button labels in agreement, and keep
+  // the hidden .clip-end in step with them — that field is what createClip reads, so the rest of the
+  // panel can change shape without touching the submit path.
+  function wirePanel(panel, duration) {
     var startBox = panel.querySelector('.clip-start');
-    var endBox = panel.querySelector('.clip-end');
     var startRange = panel.querySelector('.clip-start-range');
-    var endRange = panel.querySelector('.clip-end-range');
-    var lengthEl = panel.querySelector('.clip-length');
+    var endBox = panel.querySelector('.clip-end');
+    var makeBtn = panel.querySelector('.clip-make-btn');
     var previewBtn = panel.querySelector('.clip-preview-btn');
-    if (!startRange || !endRange) return;
+    var lenBtns = panel.querySelectorAll('.clip-len-btn');
+    var wanted = DEFAULT_LENGTH;
 
-    function clamp(n) { return Math.min(duration, Math.max(0, n)); }
+    // fromTyping says the box is the authority for this update. Without it the slider's position
+    // would always win and a typed time would be overwritten the moment it was entered.
+    function update(fromTyping) {
+      var start = null;
+      if (fromTyping) start = parseTime(startBox.value);
+      if (start === null) start = startRange ? Number(startRange.value) : (parseTime(startBox.value) || 0);
 
-    function refresh() {
-      var len = Number(endRange.value) - Number(startRange.value);
-      lengthEl.textContent = 'Length ' + fmt(len)
-        + (len > MAX_SECS ? ' — over the ' + (MAX_SECS / 60) + ' minute limit' : '');
-      lengthEl.classList.toggle('over', len > MAX_SECS);
-      // The button says where it will open, so the slider position is legible before tapping it.
-      if (previewBtn) previewBtn.textContent = 'Preview from ' + fmt(Number(startRange.value));
+      // Leave at least a second of video to take, so the start can't sit on the very last frame.
+      if (duration) start = Math.min(start, Math.max(0, duration - 1));
+      var end = duration ? Math.min(start + wanted, duration) : start + wanted;
+      var actual = Math.round(end - start);
+
+      if (startRange) startRange.value = String(start);
+      startBox.value = fmt(start);
+      endBox.value = fmt(end);
+
+      // Say the real length when the end of the video cuts it short, rather than promising 30s and
+      // quietly handing back 12.
+      makeBtn.textContent = actual < wanted
+        ? 'Clip ' + actual + 's (end of video)'
+        : 'Clip ' + lenLabel(wanted);
+      previewBtn.textContent = 'Preview from ' + fmt(start);
     }
 
-    // Dragging either handle pushes the other out of the way rather than letting them cross.
-    function fromRange() {
-      if (Number(startRange.value) >= Number(endRange.value)) {
-        if (this === startRange) endRange.value = String(clamp(Number(startRange.value) + 1));
-        else startRange.value = String(clamp(Number(endRange.value) - 1));
-      }
-      startBox.value = fmt(Number(startRange.value));
-      endBox.value = fmt(Number(endRange.value));
-      refresh();
+    if (startRange) startRange.addEventListener('input', function () { update(false); });
+    // On "change" rather than "input" so rewriting the box doesn't fight them mid-type.
+    startBox.addEventListener('change', function () { update(true); });
+
+    for (var i = 0; i < lenBtns.length; i += 1) {
+      lenBtns[i].addEventListener('click', function () {
+        wanted = Number(this.dataset.secs) || DEFAULT_LENGTH;
+        for (var j = 0; j < lenBtns.length; j += 1) {
+          lenBtns[j].classList.toggle('active', lenBtns[j] === this);
+        }
+        update(false);
+      });
     }
 
-    // Typing wins over the slider's position — that's the whole point of keeping the box.
-    function fromBox(box, range) {
-      var secs = parseTime(box.value);
-      if (secs === null) return; // leave half-typed text alone until they finish
-      range.value = String(clamp(secs));
-      fromRange.call(range);
-    }
-
-    startRange.addEventListener('input', fromRange);
-    endRange.addEventListener('input', fromRange);
-    startBox.addEventListener('change', function () { fromBox(startBox, startRange); });
-    endBox.addEventListener('change', function () { fromBox(endBox, endRange); });
-
-    refresh();
+    update(false);
   }
 
   // Twitch takes a start time as 1h2m3s rather than plain seconds.
@@ -227,13 +243,15 @@
 
     var start = parseTime(panel.querySelector('.clip-start').value);
     var end = parseTime(panel.querySelector('.clip-end').value);
-    if (start === null || end === null) return fail('Enter times like 1:30 (or plain seconds).');
-    if (end <= start) return fail('The end time has to come after the start time.');
+    if (start === null || end === null) return fail('Enter a start time like 1:30 (or plain seconds).');
+    if (end <= start) return fail("There's no video left at that point - move the start back.");
     if (end - start > MAX_SECS) return fail('Clips are capped at ' + (MAX_SECS / 60) + ' minutes for now.');
 
     var info = infoFor(card);
     if (!info.url) return fail("Couldn't work out this video's link.");
 
+    // The button's label is the length, so put it back rather than leaving "Queueing..." behind.
+    var label = btn.textContent;
     btn.disabled = true;
     msg.textContent = 'Queueing...';
 
@@ -254,6 +272,7 @@
           : 'Waiting for a free worker...';
       }).then(function (out) {
         btn.disabled = false;
+        btn.textContent = label;
         if (!out.ok) return fail(out.error);
         msg.textContent = 'Clip ready.';
         var a = document.createElement('a');
@@ -265,8 +284,42 @@
       });
     }).catch(function (err) {
       btn.disabled = false;
+      btn.textContent = label;
       fail(err.message);
     });
+  }
+
+  function lengthRow() {
+    var html = '<div class="clip-len-row" role="group" aria-label="Clip length">'
+      + '<span class="clip-len-label">Length</span>';
+    for (var i = 0; i < LENGTHS.length; i += 1) {
+      var n = LENGTHS[i];
+      html += '<button type="button" class="clip-len-btn' + (n === DEFAULT_LENGTH ? ' active' : '')
+        + '" data-secs="' + n + '">' + lenLabel(n) + '</button>';
+    }
+    return html + '</div>';
+  }
+
+  // The end time is computed from start + length, so it lives in a hidden field rather than in a
+  // control of its own. createClip reads it exactly as it always did.
+  function panelHtml(duration) {
+    var html = '<div class="clip-slider-row">'
+      + '<div class="clip-slider-head"><span>Start</span>'
+      + '<input type="text" class="clip-start" value="0:00" /></div>';
+    if (duration) {
+      html += '<input type="range" class="clip-start-range" min="0" max="' + duration
+        + '" step="1" value="0" />';
+    }
+    html += '</div>';
+
+    return html
+      + lengthRow()
+      + '<input type="hidden" class="clip-end" value="0:30" />'
+      + '<div class="clip-actions">'
+      + '<button type="button" class="clip-make-btn">Clip 30s</button>'
+      + '<button type="button" class="clip-preview-btn">Preview from 0:00</button>'
+      + '</div>'
+      + '<div class="clip-msg"></div>';
   }
 
   function decorate() {
@@ -294,55 +347,24 @@
       var card = open.closest('.video-card');
       var existing = card.querySelector('.clip-panel');
       if (existing) { existing.remove(); open.classList.remove('open'); return; }
-      var panel = document.createElement('div');
-      panel.className = 'clip-panel';
 
       var duration = durationOf(card);
-      if (duration) {
-        // A sensible opening selection: the first 30 seconds, or the whole thing if it's shorter.
-        var initialEnd = Math.min(30, duration);
-        panel.innerHTML =
-          '<div class="clip-slider-row">'
-          + '<div class="clip-slider-head"><span>Start</span>'
-          + '<input type="text" class="clip-start" value="0:00" /></div>'
-          + '<input type="range" class="clip-start-range" min="0" max="' + duration + '" step="1" value="0" />'
-          + '</div>'
-          + '<div class="clip-slider-row">'
-          + '<div class="clip-slider-head"><span>End</span>'
-          + '<input type="text" class="clip-end" value="' + fmt(initialEnd) + '" /></div>'
-          + '<input type="range" class="clip-end-range" min="0" max="' + duration + '" step="1" value="'
-          + initialEnd + '" />'
-          + '</div>'
-          + '<div class="clip-length"></div>'
-          + '<div class="clip-actions">'
-          + '<button type="button" class="clip-make-btn">Create clip</button>'
-          + '<button type="button" class="clip-preview-btn">Preview from 0:00</button>'
-          + '</div>'
-          + '<div class="clip-msg"></div>';
-      } else {
-        // No length on the card (a live VOD still recording, say) means no range to slide over.
-        panel.innerHTML = '<div class="clip-times">'
-          + '<label>Start (mm:ss)<input type="text" class="clip-start" placeholder="0:00" /></label>'
-          + '<label>End (mm:ss)<input type="text" class="clip-end" placeholder="0:30" /></label></div>'
-          + '<div class="clip-actions">'
-          + '<button type="button" class="clip-make-btn">Create clip</button>'
-          + '<button type="button" class="clip-preview-btn">Preview from start</button>'
-          + '</div>'
-          + '<div class="clip-msg"></div>';
-      }
+      var panel = document.createElement('div');
+      panel.className = 'clip-panel';
+      panel.innerHTML = panelHtml(duration);
 
       card.querySelector('.body').appendChild(panel);
-      if (duration) wireSliders(panel, duration);
+      wirePanel(panel, duration);
       open.classList.add('open');
       return;
     }
+
     var preview = e.target.closest('.clip-preview-btn');
     if (preview) {
-      var pCard = preview.closest('.video-card');
       var pPanel = preview.closest('.clip-panel');
       // Fall back to 0 for a half-typed time rather than refusing to open the player.
       var at = parseTime(pPanel.querySelector('.clip-start').value) || 0;
-      openPreview(pCard, at);
+      openPreview(preview.closest('.video-card'), at);
       return;
     }
 
