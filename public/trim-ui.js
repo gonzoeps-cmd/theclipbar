@@ -1,12 +1,12 @@
-// In-browser trimmer for finished clips.
+// In-browser editing for finished clips: a manual trimmer and a one-press "Cut dead air".
 //
 // Self-contained on purpose: it watches for a clip's download link appearing and attaches itself,
 // so neither live-clip.js nor app.js needs to know it exists. Works out the worker's address from
 // the download link itself rather than needing configuration.
 //
-// The trimming happens on the worker (POST /trim), not here — the file is already sitting on that
-// machine and ffmpeg is already installed there, so re-cutting is a fast stream copy. Doing it in
-// the browser would mean shipping a video encoder to the phone for no benefit.
+// Both operations happen on the worker (POST /trim and POST /autocut), not here — the file is
+// already sitting on that machine with the tools installed, so it is faster there and nothing has
+// to be uploaded. Doing it in the browser would mean shipping a video encoder to the phone.
 (function () {
   'use strict';
   var card = document.getElementById('channel-card');
@@ -31,7 +31,13 @@
     + '.trim-msg{font-size:.78rem;color:var(--muted);line-height:1.4}'
     + '.trim-msg.error{color:#ff6b6b}'
     + '.trim-dl{display:inline-block;background:#2ea043;color:#fff;text-decoration:none;'
-    + 'padding:8px 14px;border-radius:6px;font-size:.82rem}';
+    + 'padding:8px 14px;border-radius:6px;font-size:.82rem}'
+    // The auto-cut button and its result panel borrow the trimmer's look so the two sit together
+    // as one row of controls rather than looking bolted on.
+    + '.autocut-btn{background:transparent;border:1px solid var(--border);color:var(--text);'
+    + 'padding:7px 13px;border-radius:6px;font-size:.82rem;cursor:pointer}'
+    + '.autocut-btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}'
+    + '.autocut-btn:disabled{opacity:.6;cursor:default}';
   var styleEl = document.createElement('style');
   styleEl.textContent = css;
   document.head.appendChild(styleEl);
@@ -55,7 +61,47 @@
     }
   }
 
-  function buildPanel(link, source) {
+  // Panel shown after an auto-cut finishes: the shortened clip, how much came off, a download, and
+  // a way to hand the result straight to the manual trimmer for fine-tuning.
+  function buildResultPanel(source, originalDuration) {
+    var panel = document.createElement('div');
+    panel.className = 'trim-panel';
+    panel.innerHTML =
+      '<video controls preload="metadata" playsinline src="' + source.src + '"></video>'
+      + '<span class="trim-msg autocut-summary">Dead air removed.</span>'
+      + '<div class="trim-actions">'
+      + '<a class="trim-dl" href="' + source.src + '" download>Download</a>'
+      + '<button type="button" class="trim-preview autocut-refine">Trim this one further</button>'
+      + '</div>';
+
+    var video = panel.querySelector('video');
+    var summary = panel.querySelector('.autocut-summary');
+
+    // Only say how much came off once the browser knows how long the new file is.
+    video.addEventListener('loadedmetadata', function () {
+      var now = video.duration;
+      if (!isFinite(now) || now <= 0) return;
+      if (isFinite(originalDuration) && originalDuration > now) {
+        summary.textContent = 'Cut from ' + fmt(originalDuration) + ' down to ' + fmt(now)
+          + ' — ' + fmt(originalDuration - now) + ' of dead air removed.';
+      } else {
+        summary.textContent = 'Now ' + fmt(now) + '.';
+      }
+    });
+
+    panel.querySelector('.autocut-refine').addEventListener('click', function () {
+      var open = card.querySelector('.trim-panel.trim-manual');
+      if (open) open.remove();
+      var manual = buildPanel(source);
+      manual.classList.add('trim-manual');
+      card.appendChild(manual);
+      manual.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+
+    return panel;
+  }
+
+  function buildPanel(source) {
     var panel = document.createElement('div');
     panel.className = 'trim-panel';
     panel.innerHTML =
@@ -177,12 +223,70 @@
     link.parentNode.appendChild(btn);
 
     btn.addEventListener('click', function () {
-      var open = card.querySelector('.trim-panel');
+      var open = card.querySelector('.trim-panel.trim-manual');
       if (open) {
         open.remove();
         return;
       }
-      card.appendChild(buildPanel(link, source));
+      var manual = buildPanel(source);
+      manual.classList.add('trim-manual');
+      card.appendChild(manual);
+    });
+
+    var autoBtn = document.createElement('button');
+    autoBtn.type = 'button';
+    autoBtn.className = 'autocut-btn';
+    autoBtn.textContent = 'Cut dead air';
+    autoBtn.title = 'Automatically remove the silent stretches from this clip';
+    link.parentNode.appendChild(autoBtn);
+
+    autoBtn.addEventListener('click', function () {
+      var existing = card.querySelector('.trim-panel.trim-auto');
+      if (existing) existing.remove();
+
+      // The original clip's length is read straight off the source so the result panel can say how
+      // much actually came off. A browser that can't report it just gets the shorter summary.
+      var probe = document.createElement('video');
+      probe.preload = 'metadata';
+      probe.src = source.src;
+      var originalDuration = NaN;
+      probe.addEventListener('loadedmetadata', function () {
+        originalDuration = probe.duration;
+      });
+
+      autoBtn.disabled = true;
+      autoBtn.textContent = 'Cutting...';
+
+      fetch(source.origin + '/autocut', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: source.file })
+      }).then(function (r) {
+        return r.json().then(function (j) {
+          if (!r.ok) throw new Error(j.error || 'Auto-cut failed.');
+          return j;
+        });
+      }).then(function (result) {
+        autoBtn.disabled = false;
+        autoBtn.textContent = 'Cut dead air';
+        var cutSource = {
+          origin: source.origin,
+          file: result.file,
+          src: source.origin + '/clips/' + result.file
+        };
+        var panel = buildResultPanel(cutSource, originalDuration);
+        panel.classList.add('trim-auto');
+        card.appendChild(panel);
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }).catch(function (err) {
+        autoBtn.disabled = false;
+        autoBtn.textContent = 'Cut dead air';
+        var note = document.createElement('div');
+        note.className = 'trim-panel trim-auto';
+        note.innerHTML = '<span class="trim-msg error"></span>';
+        note.querySelector('.trim-msg').textContent = err.message;
+        card.appendChild(note);
+      });
     });
   }
 
