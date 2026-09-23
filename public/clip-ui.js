@@ -44,6 +44,22 @@
     + '.clip-preview-btn:hover{border-color:var(--accent);color:var(--accent)}'
     + '.clip-msg{font-size:.78rem;color:var(--muted);line-height:1.4}'
     + '.clip-msg.error{color:#ff6b6b}'
+    // Preview opens over the page rather than inside the card. A bigger frame is the whole point:
+    // the platforms paint their own channel name, Follow and Gift a Sub over a small player, and at
+    // card size that chrome covers most of the picture.
+    + '.clip-modal{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.84);'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px}'
+    + '.clip-modal-box{width:100%;max-width:900px;background:#0d0f14;'
+    + 'border:1px solid var(--border);border-radius:10px;overflow:hidden;'
+    + 'display:flex;flex-direction:column}'
+    + '.clip-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;'
+    + 'padding:9px 12px;font-size:.82rem;color:var(--muted)}'
+    + '.clip-modal-close{background:transparent;border:1px solid var(--border);color:var(--text);'
+    + 'width:32px;height:32px;border-radius:8px;font-size:.9rem;line-height:1;cursor:pointer;'
+    + 'flex-shrink:0}'
+    + '.clip-modal-close:hover{border-color:var(--accent);color:var(--accent)}'
+    + '.clip-modal-frame{position:relative;width:100%;aspect-ratio:16/9;background:#000}'
+    + '.clip-modal-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}'
     + '.clip-download{display:inline-block;background:#2ea043;color:#fff;text-decoration:none;'
     + 'padding:8px 14px;border-radius:6px;font-size:.82rem;text-align:center}';
   var s = document.createElement('style');
@@ -165,40 +181,61 @@
       + '&parent=' + host + '&autoplay=true&time=' + twitchTime(secs);
   }
 
-  // Open the card's inline player at a position. The iframe and close button deliberately reuse
-  // app.js's class names, so the ✕ its click handler already listens for closes this player too and
-  // app.js needs no change.
+  // --- preview popup --------------------------------------------------------
+  //
+  // The preview opens over the page instead of inside the card. Two reasons: the card's player is
+  // small enough that the platform's own overlay (channel name, Follow, Gift a Sub) covers the
+  // picture, and a player wedged into the card pushes the controls you are using off screen.
+
+  var openModal = null;
+
+  function closePreview() {
+    if (!openModal) return;
+    // Removing the iframe is what actually stops playback; hiding it would keep the audio running.
+    openModal.remove();
+    openModal = null;
+    document.removeEventListener('keydown', onPreviewKey);
+    document.body.style.overflow = '';
+  }
+
+  function onPreviewKey(e) {
+    if (e.key === 'Escape') closePreview();
+  }
+
   function openPreview(card, atSeconds) {
     var thumb = card.querySelector('.thumb-wrap');
     if (!thumb || !thumb.dataset.id) return;
 
-    // Only one player at a time, same as the play button.
-    document.querySelectorAll('.thumb-wrap.playing').forEach(function (el) {
-      el.classList.remove('playing');
-      var openFrame = el.querySelector('.player-iframe');
-      if (openFrame) openFrame.remove();
-      var openClose = el.querySelector('.close-player-btn');
-      if (openClose) openClose.remove();
-    });
+    closePreview(); // never stack two players
+
+    var modal = document.createElement('div');
+    modal.className = 'clip-modal';
+    modal.innerHTML = '<div class="clip-modal-box" role="dialog" aria-modal="true"'
+      + ' aria-label="Clip preview">'
+      + '<div class="clip-modal-head"><span class="clip-modal-title"></span>'
+      + '<button type="button" class="clip-modal-close" aria-label="Close preview">✕</button>'
+      + '</div>'
+      + '<div class="clip-modal-frame"></div></div>';
+    modal.querySelector('.clip-modal-title').textContent = 'Preview from ' + fmt(atSeconds);
 
     var iframe = document.createElement('iframe');
-    iframe.className = 'player-iframe';
     iframe.src = previewUrl(thumb, atSeconds);
     iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
     iframe.allowFullscreen = true;
-    iframe.frameBorder = '0';
+    modal.querySelector('.clip-modal-frame').appendChild(iframe);
 
-    var closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'close-player-btn';
-    closeBtn.setAttribute('aria-label', 'Close player');
-    closeBtn.title = 'Close player';
-    closeBtn.textContent = '✕';
+    modal.addEventListener('click', function (e) {
+      // The backdrop and the ✕ close it; a click on the player itself must not.
+      if (e.target === modal || e.target.closest('.clip-modal-close')) closePreview();
+    });
 
-    thumb.appendChild(iframe);
-    thumb.appendChild(closeBtn);
-    thumb.classList.add('playing');
-    thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    document.addEventListener('keydown', onPreviewKey);
+    document.body.style.overflow = 'hidden'; // stop the page scrolling behind the popup
+    document.body.appendChild(modal);
+    openModal = modal;
+
+    var closeBtn = modal.querySelector('.clip-modal-close');
+    if (closeBtn) closeBtn.focus();
   }
 
   function infoFor(card) {
