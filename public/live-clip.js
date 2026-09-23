@@ -91,9 +91,9 @@
     card.querySelectorAll('.trim-panel').forEach(function (panel) { panel.remove(); });
   }
 
-  // Twitch publishes only ~30s of its ~90s capture by default. The edit link opens Twitch's own
-  // trimmer where any 5-60s slice can be chosen; re-downloading afterwards picks up that version,
-  // since the edited clip keeps the same URL.
+  // Twitch publishes only part of its ~90s capture. The edit link opens Twitch's own trimmer where
+  // any 5-60s slice can be chosen; re-downloading afterwards picks up that version, since the
+  // edited clip keeps the same URL.
   function showResult(job, downloadUrl) {
     say('Clip ready.');
     clearResult();
@@ -138,10 +138,11 @@
     if (job.editUrl) {
       var hint = document.createElement('div');
       hint.className = 'live-clip-hint';
+      // Deliberately names no length: the clip length is a server setting (CLIP_DURATION_SECONDS)
+      // that the page never sees, and this text used to state a number that could go stale.
       hint.textContent =
-                'Clips are requested at 60s so you have room to trim down. "Adjust on Twitch" opens '
-        + 'their editor — save there, then "Download again". Twitch’s editor has been '
-        + 'unreliable lately, so trimming in your own editor is the safer bet.';
+        '"Adjust on Twitch" opens their editor — save there, then "Download again". '
+        + 'Twitch’s editor has been unreliable lately, so "Trim" here is the safer bet.';
       card.appendChild(hint);
     }
   }
@@ -193,7 +194,7 @@
       });
     }).then(function (job) {
       // Twitch needs a moment to process a brand new clip, so the download job starts delayed.
-            say('Twitch made the clip. Waiting for Twitch to render it, then downloading - up to a couple of minutes for a 60s clip...');
+      say('Twitch made the clip. Waiting for Twitch to render it, then downloading...');
 
       return poll(job.statusUrl, function (state) {
         say(state === 'active'
@@ -231,7 +232,7 @@
     btn.type = 'button';
     btn.className = 'live-clip-btn';
     btn.textContent = 'Clip live';
-    btn.title = 'Clip the last ~30 seconds of this stream via Twitch';
+    btn.title = 'Clip the last few seconds of this stream via Twitch';
     actions.appendChild(btn);
   }
 
