@@ -25,7 +25,12 @@
     + '.live-clip-again{background:transparent;border:1px solid var(--border);color:var(--muted);'
     + 'padding:7px 13px;border-radius:6px;font-size:.82rem;cursor:pointer}'
     + '.live-clip-again:hover{border-color:var(--accent);color:var(--accent)}'
-    + '.live-clip-hint{font-size:.75rem;color:var(--muted);margin-top:6px;line-height:1.4}';
+    + '.live-clip-hint{font-size:.75rem;color:var(--muted);margin-top:6px;line-height:1.4}'
+    // Without this the finished clip and everything under it stays on the card for the rest of the
+    // session, with no way back to a clean channel view.
+    + '.live-clip-close{background:transparent;border:1px solid var(--border);color:var(--muted);'
+    + 'padding:7px 13px;border-radius:6px;font-size:.82rem;cursor:pointer;margin-left:auto}'
+    + '.live-clip-close:hover{border-color:#ff6b6b;color:#ff6b6b}';
   var s = document.createElement('style');
   s.textContent = css;
   document.head.appendChild(s);
@@ -76,6 +81,16 @@
     if (hint) hint.remove();
   }
 
+  // Put the card back the way it was before the clip: the result row, the hint, the status line and
+  // any trimmer panels trim-ui.js opened underneath. The clip itself is untouched on the worker, so
+  // closing this never loses a clip that has already been downloaded.
+  function dismissAll() {
+    clearResult();
+    var msg = card.querySelector('.live-clip-msg');
+    if (msg) msg.remove();
+    card.querySelectorAll('.trim-panel').forEach(function (panel) { panel.remove(); });
+  }
+
   // Twitch publishes only ~30s of its ~90s capture by default. The edit link opens Twitch's own
   // trimmer where any 5-60s slice can be chosen; re-downloading afterwards picks up that version,
   // since the edited clip keeps the same URL.
@@ -110,6 +125,14 @@
       row.appendChild(again);
     }
 
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'live-clip-close';
+    close.textContent = 'Close';
+    close.title = 'Clear this clip from the card';
+    close.addEventListener('click', dismissAll);
+    row.appendChild(close);
+
     card.appendChild(row);
 
     if (job.editUrl) {
@@ -117,7 +140,7 @@
       hint.className = 'live-clip-hint';
       hint.textContent =
                 'Clips are requested at 60s so you have room to trim down. "Adjust on Twitch" opens '
-        + 'their editor \u2014 save there, then "Download again". Twitch\u2019s editor has been '
+        + 'their editor — save there, then "Download again". Twitch’s editor has been '
         + 'unreliable lately, so trimming in your own editor is the safer bet.';
       card.appendChild(hint);
     }

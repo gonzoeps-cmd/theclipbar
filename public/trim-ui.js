@@ -13,6 +13,14 @@
 // to be uploaded. Doing it in the browser would mean shipping a video encoder to the phone.
 (function () {
   'use strict';
+
+  // Cut dead air is off. auto-editor's Linux binary needs a newer system C library than Render's
+  // machine has (GLIBC_2.38), so every run failed there; every published release back to v29 has
+  // the same requirement, so there is no older build to fall back to. The button is hidden rather
+  // than left to fail. Flip this back to true once the silence cutting is done with ffmpeg, which
+  // is already installed and working on the worker.
+  var AUTOCUT_ENABLED = false;
+
   var channelCard = document.getElementById('channel-card');
   var results = document.getElementById('results');
   if (!channelCard && !results) return;
@@ -42,10 +50,31 @@
     + '.autocut-btn{background:transparent;border:1px solid var(--border);color:var(--text);'
     + 'padding:7px 13px;border-radius:6px;font-size:.82rem;cursor:pointer}'
     + '.autocut-btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}'
-    + '.autocut-btn:disabled{opacity:.6;cursor:default}';
+    + '.autocut-btn:disabled{opacity:.6;cursor:default}'
+    // Every panel gets its own dismiss. Editing tools that can only be opened pile up under the
+    // card and there is no way back to a clean view.
+    + '.trim-head{display:flex;align-items:center;justify-content:space-between;gap:10px}'
+    + '.trim-head-title{font-size:.78rem;color:var(--muted)}'
+    + '.trim-close{background:transparent;border:1px solid var(--border);color:var(--muted);'
+    + 'width:28px;height:28px;border-radius:6px;font-size:.8rem;line-height:1;cursor:pointer;'
+    + 'flex-shrink:0}'
+    + '.trim-close:hover{border-color:var(--accent);color:var(--accent)}';
   var styleEl = document.createElement('style');
   styleEl.textContent = css;
   document.head.appendChild(styleEl);
+
+  // Give a panel a title bar with a dismiss button. Returns the markup; the click is wired in
+  // closable() once the panel element exists.
+  function headHtml(title) {
+    return '<div class="trim-head"><span class="trim-head-title">' + title + '</span>'
+      + '<button type="button" class="trim-close" aria-label="Close ' + title + '">✕</button></div>';
+  }
+
+  function closable(panel) {
+    var btn = panel.querySelector('.trim-close');
+    if (btn) btn.addEventListener('click', function () { panel.remove(); });
+    return panel;
+  }
 
   function fmt(total) {
     var n = Math.max(0, total || 0);
@@ -71,8 +100,8 @@
   function buildResultPanel(host, source, originalDuration) {
     var panel = document.createElement('div');
     panel.className = 'trim-panel';
-    panel.innerHTML =
-      '<video controls preload="metadata" playsinline src="' + source.src + '"></video>'
+    panel.innerHTML = headHtml('Dead air removed')
+      + '<video controls preload="metadata" playsinline src="' + source.src + '"></video>'
       + '<span class="trim-msg autocut-summary">Dead air removed.</span>'
       + '<div class="trim-actions">'
       + '<a class="trim-dl" href="' + source.src + '" download>Download</a>'
@@ -103,14 +132,14 @@
       manual.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
 
-    return panel;
+    return closable(panel);
   }
 
   function buildPanel(source) {
     var panel = document.createElement('div');
     panel.className = 'trim-panel';
-    panel.innerHTML =
-      '<video controls preload="metadata" playsinline src="' + source.src + '"></video>'
+    panel.innerHTML = headHtml('Trim')
+      + '<video controls preload="metadata" playsinline src="' + source.src + '"></video>'
       + '<div class="trim-range"><label>Start <span class="trim-start-val">0:00.0</span></label>'
       + '<input type="range" class="trim-start" min="0" max="100" step="0.1" value="0" /></div>'
       + '<div class="trim-range"><label>End <span class="trim-end-val">0:00.0</span></label>'
@@ -209,7 +238,7 @@
     });
 
     refreshLabels();
-    return panel;
+    return closable(panel);
   }
 
   // Where a clip's editing panels get appended. A VOD clip's link sits inside the clip panel on its
@@ -247,6 +276,8 @@
       manual.classList.add('trim-manual');
       host.appendChild(manual);
     });
+
+    if (!AUTOCUT_ENABLED) return;
 
     var autoBtn = document.createElement('button');
     autoBtn.type = 'button';
@@ -298,9 +329,9 @@
         autoBtn.textContent = 'Cut dead air';
         var note = document.createElement('div');
         note.className = 'trim-panel trim-auto';
-        note.innerHTML = '<span class="trim-msg error"></span>';
+        note.innerHTML = headHtml('Auto-cut') + '<span class="trim-msg error"></span>';
         note.querySelector('.trim-msg').textContent = err.message;
-        host.appendChild(note);
+        host.appendChild(closable(note));
       });
     });
   }
