@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 3001;
 const BIN_DIR = path.join(__dirname, '..', 'bin');
 const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp');
 const FFMPEG_PATH = path.join(BIN_DIR, 'ffmpeg');
+const AUTO_EDITOR_PATH = path.join(BIN_DIR, 'auto-editor');
 const CLIPS_DIR = path.join(os.tmpdir(), 'theclipbar-clips');
 const CLIP_TTL_MS = 60 * 60 * 1000; // sweep finished clips after an hour
 const JOB_TIMEOUT_MS = 10 * 60 * 1000; // don't let a stuck download run forever
@@ -255,6 +256,7 @@ app.get('/health', (req, res) => {
     ok: true,
     ytdlp: fs.existsSync(YTDLP_PATH),
     ffmpeg: fs.existsSync(FFMPEG_PATH),
+    autoEditor: fs.existsSync(AUTO_EDITOR_PATH),
     redis: Boolean(process.env.REDIS_URL),
   });
 });
@@ -360,9 +362,117 @@ app.post('/trim', express.json(), (req, res) => {
     res.json({ file: outName, bytes: size });
   });
 });
+
+// Cut the dead air out of a clip that's already been downloaded. auto-editor reads the clip's audio,
+// works out which stretches are quiet, and rebuilds the file without them.
+//
+// This one DOES re-encode, unlike /trim. Re-encoding is what saturated this instance's CPU and got
+// the service killed mid-job in the past, so three guards keep it in its lane: one at a time, a hard
+// timeout, and the "veryfast" encoder preset. On a 30-second clip it lands in a few seconds.
+const AUTOCUT_TIMEOUT_MS = 150000;
+let autocutBusy = false;
+
+app.post('/autocut', express.json(), (req, res) => {
+  if (!fs.existsSync(AUTO_EDITOR_PATH)) {
+    return res.status(503).json({ error: 'The auto-cut tool is not installed on the worker.' });
+  }
+  if (autocutBusy) {
+    return res.status(429).json({ error: 'Another clip is being auto-cut right now — try again in a moment.' });
+  }
+
+  const body = req.body || {};
+
+  // Only ever read a clip out of CLIPS_DIR — never an arbitrary path.
+  const name = path.basename(String(body.file || ''));
+  if (!/^[A-Za-z0-9_-]+\.mp4$/.test(name)) {
+    return res.status(400).json({ error: 'Bad clip name.' });
+  }
+  const source = path.join(CLIPS_DIR, name);
+  if (!fs.existsSync(source)) {
+    return res.status(404).json({ error: 'That clip is no longer on the server — make a new one.' });
+  }
+
+  // Padding left either side of the kept audio. Cutting exactly on the word boundary sounds
+  // clipped, so this small margin is what makes the result listenable rather than choppy.
+  let margin = Number(body.margin);
+  if (!Number.isFinite(margin) || margin < 0 || margin > 2) margin = 0.2;
+
+  // How loud a moment has to be to count as "not silence", as a fraction of full scale. Lower keeps
+  // more of the clip, higher cuts more aggressively.
+  let threshold = Number(body.threshold);
+  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 0.5) threshold = 0.04;
+
+  const outName = `${name.replace(/\.mp4$/, '')}-a${Date.now().toString(36)}.mp4`;
+  const outPath = path.join(CLIPS_DIR, outName);
+
+  const args = [
+    source,
+    '-o', outPath,
+    '--edit', `audio:threshold=${threshold}`,
+    '--margin', `${margin}s`,
+    '-preset', 'veryfast', // keeps the encode cheap on a shared CPU
+    '--faststart', // so the browser can start playing the result without downloading all of it
+    '--progress', 'none', // no progress bar to parse out of the output
+    '-q',
+  ];
+
+  autocutBusy = true;
+  const child = spawn(AUTO_EDITOR_PATH, args);
+
+  let tail = '';
+  const collect = (chunk) => {
+    tail = (tail + chunk.toString()).slice(-2000);
+  };
+  child.stdout.on('data', collect);
+  child.stderr.on('data', collect);
+
+  const killer = setTimeout(() => {
+    console.error('[worker] autocut timed out — killing it');
+    child.kill('SIGKILL');
+  }, AUTOCUT_TIMEOUT_MS);
+
+  // A spawn error and a close can both fire, so funnel every outcome through one reply. Without
+  // this, a failure to start would try to send two responses and leave autocutBusy stuck on.
+  let answered = false;
+  function answer(status, payload) {
+    if (answered) return;
+    answered = true;
+    clearTimeout(killer);
+    autocutBusy = false;
+    res.status(status).json(payload);
+  }
+
+  child.on('error', (err) => {
+    console.error('[worker] autocut could not start:', err.message);
+    answer(500, { error: 'Could not start the auto-cutter.' });
+  });
+
+  child.on('close', (code) => {
+    if (code !== 0 || !fs.existsSync(outPath)) {
+      const plain = tail.replace(/\x1b\[[0-9;]*m/g, ''); // strip the tool's colour codes
+      console.error(`[worker] autocut failed (code=${code}):`, plain.slice(-800));
+
+      // auto-editor exits non-zero when every moment was below the threshold. That's a normal
+      // outcome for a quiet clip, not a bug, so it gets its own plain-English answer.
+      if (/Timeline is empty/i.test(plain)) {
+        return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
+      }
+      return answer(502, { error: 'Auto-cut failed on this clip.' });
+    }
+
+    const { size } = fs.statSync(outPath);
+    console.log(`[worker] autocut ${name} -> ${outName} (${size} bytes)`);
+    answer(200, { file: outName, bytes: size });
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`[worker] http listening on ${PORT}`);
-  console.log(`[worker] yt-dlp: ${fs.existsSync(YTDLP_PATH) ? 'ready' : 'MISSING'} | ffmpeg: ${fs.existsSync(FFMPEG_PATH) ? 'ready' : 'MISSING'}`);
+  console.log(
+    `[worker] yt-dlp: ${fs.existsSync(YTDLP_PATH) ? 'ready' : 'MISSING'}`
+      + ` | ffmpeg: ${fs.existsSync(FFMPEG_PATH) ? 'ready' : 'MISSING'}`
+      + ` | auto-editor: ${fs.existsSync(AUTO_EDITOR_PATH) ? 'ready' : 'MISSING'}`
+  );
 });
 
 // --- queue consumer --------------------------------------------------------
