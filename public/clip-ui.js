@@ -27,9 +27,13 @@
     + '.clip-slider-row input[type=range]{width:100%;accent-color:var(--accent);margin:0}'
     + '.clip-length{font-size:.72rem;color:var(--muted)}'
     + '.clip-length.over{color:#ff6b6b}'
+    + '.clip-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}'
     + '.clip-make-btn{background:var(--accent);color:#fff;border:none;padding:8px 14px;'
     + 'border-radius:6px;font-size:.82rem;cursor:pointer}'
     + '.clip-make-btn:disabled{opacity:.6;cursor:default}'
+    + '.clip-preview-btn{background:transparent;border:1px solid var(--border);color:var(--muted);'
+    + 'padding:8px 13px;border-radius:6px;font-size:.82rem;cursor:pointer;white-space:nowrap}'
+    + '.clip-preview-btn:hover{border-color:var(--accent);color:var(--accent)}'
     + '.clip-msg{font-size:.78rem;color:var(--muted);line-height:1.4}'
     + '.clip-msg.error{color:#ff6b6b}'
     + '.clip-download{display:inline-block;background:#2ea043;color:#fff;text-decoration:none;'
@@ -78,6 +82,7 @@
     var startRange = panel.querySelector('.clip-start-range');
     var endRange = panel.querySelector('.clip-end-range');
     var lengthEl = panel.querySelector('.clip-length');
+    var previewBtn = panel.querySelector('.clip-preview-btn');
     if (!startRange || !endRange) return;
 
     function clamp(n) { return Math.min(duration, Math.max(0, n)); }
@@ -87,6 +92,8 @@
       lengthEl.textContent = 'Length ' + fmt(len)
         + (len > MAX_SECS ? ' — over the ' + (MAX_SECS / 60) + ' minute limit' : '');
       lengthEl.classList.toggle('over', len > MAX_SECS);
+      // The button says where it will open, so the slider position is legible before tapping it.
+      if (previewBtn) previewBtn.textContent = 'Preview from ' + fmt(Number(startRange.value));
     }
 
     // Dragging either handle pushes the other out of the way rather than letting them cross.
@@ -114,6 +121,68 @@
     endBox.addEventListener('change', function () { fromBox(endBox, endRange); });
 
     refresh();
+  }
+
+  // Twitch takes a start time as 1h2m3s rather than plain seconds.
+  function twitchTime(total) {
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    return h + 'h' + m + 'm' + (total % 60) + 's';
+  }
+
+  // Build this card's embed URL starting at a given second. Mirrors what app.js does for the play
+  // button, with the platform's own start-time parameter added. A Twitch clip has no such parameter,
+  // so it always opens from its beginning.
+  function previewUrl(thumb, atSeconds) {
+    var d = thumb.dataset;
+    var host = window.location.hostname;
+    var secs = Math.max(0, Math.floor(atSeconds || 0));
+    if (d.platform === 'youtube') {
+      return 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(d.id)
+        + '?autoplay=1&start=' + secs;
+    }
+    if (d.kind === 'clip') {
+      return 'https://clips.twitch.tv/embed?clip=' + encodeURIComponent(d.id)
+        + '&parent=' + host + '&autoplay=true';
+    }
+    return 'https://player.twitch.tv/?video=' + encodeURIComponent(d.id)
+      + '&parent=' + host + '&autoplay=true&time=' + twitchTime(secs);
+  }
+
+  // Open the card's inline player at a position. The iframe and close button deliberately reuse
+  // app.js's class names, so the ✕ its click handler already listens for closes this player too and
+  // app.js needs no change.
+  function openPreview(card, atSeconds) {
+    var thumb = card.querySelector('.thumb-wrap');
+    if (!thumb || !thumb.dataset.id) return;
+
+    // Only one player at a time, same as the play button.
+    document.querySelectorAll('.thumb-wrap.playing').forEach(function (el) {
+      el.classList.remove('playing');
+      var openFrame = el.querySelector('.player-iframe');
+      if (openFrame) openFrame.remove();
+      var openClose = el.querySelector('.close-player-btn');
+      if (openClose) openClose.remove();
+    });
+
+    var iframe = document.createElement('iframe');
+    iframe.className = 'player-iframe';
+    iframe.src = previewUrl(thumb, atSeconds);
+    iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+    iframe.allowFullscreen = true;
+    iframe.frameBorder = '0';
+
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'close-player-btn';
+    closeBtn.setAttribute('aria-label', 'Close player');
+    closeBtn.title = 'Close player';
+    closeBtn.textContent = '✕';
+
+    thumb.appendChild(iframe);
+    thumb.appendChild(closeBtn);
+    thumb.classList.add('playing');
+    thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   function infoFor(card) {
@@ -245,14 +314,20 @@
           + initialEnd + '" />'
           + '</div>'
           + '<div class="clip-length"></div>'
+          + '<div class="clip-actions">'
           + '<button type="button" class="clip-make-btn">Create clip</button>'
+          + '<button type="button" class="clip-preview-btn">Preview from 0:00</button>'
+          + '</div>'
           + '<div class="clip-msg"></div>';
       } else {
         // No length on the card (a live VOD still recording, say) means no range to slide over.
         panel.innerHTML = '<div class="clip-times">'
           + '<label>Start (mm:ss)<input type="text" class="clip-start" placeholder="0:00" /></label>'
           + '<label>End (mm:ss)<input type="text" class="clip-end" placeholder="0:30" /></label></div>'
+          + '<div class="clip-actions">'
           + '<button type="button" class="clip-make-btn">Create clip</button>'
+          + '<button type="button" class="clip-preview-btn">Preview from start</button>'
+          + '</div>'
           + '<div class="clip-msg"></div>';
       }
 
@@ -261,6 +336,16 @@
       open.classList.add('open');
       return;
     }
+    var preview = e.target.closest('.clip-preview-btn');
+    if (preview) {
+      var pCard = preview.closest('.video-card');
+      var pPanel = preview.closest('.clip-panel');
+      // Fall back to 0 for a half-typed time rather than refusing to open the player.
+      var at = parseTime(pPanel.querySelector('.clip-start').value) || 0;
+      openPreview(pCard, at);
+      return;
+    }
+
     var make = e.target.closest('.clip-make-btn');
     if (make) createClip(make.closest('.clip-panel'), make.closest('.video-card'));
   });
