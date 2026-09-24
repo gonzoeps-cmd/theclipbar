@@ -9,6 +9,12 @@
 
   var POLL_MS = 2000, TIMEOUT_MS = 300000;
 
+  // How the clip straddles the button press. These two MUST add up to CLIP_DURATION_SECONDS on the
+  // web service (src/routes/twitch-auth.js), which is the length Twitch is actually asked for —
+  // Twitch's window ends at the request, so lead + trail is the whole clip. 10 + 20 = 30.
+  var CLIP_LEAD_SECONDS = 10;   // before the press
+  var CLIP_TRAIL_SECONDS = 20;  // after it, which is also how long the request is held back
+
   var css = '.live-clip-btn{background:#2ea043;color:#fff;border:none;padding:8px 14px;'
     + 'border-radius:8px;font-size:.85rem;cursor:pointer;white-space:nowrap}'
     + '.live-clip-btn:hover{background:#278036}'
@@ -30,7 +36,12 @@
     // session, with no way back to a clean channel view.
     + '.live-clip-close{background:transparent;border:1px solid var(--border);color:var(--muted);'
     + 'padding:7px 13px;border-radius:6px;font-size:.82rem;cursor:pointer;margin-left:auto}'
-    + '.live-clip-close:hover{border-color:#ff6b6b;color:#ff6b6b}';
+    + '.live-clip-close:hover{border-color:#ff6b6b;color:#ff6b6b}'
+    + '.live-clip-count{color:var(--accent);font-variant-numeric:tabular-nums}'
+    + '.live-clip-cancel{background:transparent;border:1px solid var(--border);color:var(--muted);'
+    + 'padding:3px 10px;border-radius:6px;font-size:.75rem;cursor:pointer;margin-left:6px}'
+    + '.live-clip-cancel:hover{border-color:#ff6b6b;color:#ff6b6b}'
+    + '.live-clip-note{display:block;margin-top:4px;font-size:.72rem;color:var(--muted)}';
   var s = document.createElement('style');
   s.textContent = css;
   document.head.appendChild(s);
@@ -173,6 +184,10 @@
     });
   }
 
+  // Pressing the button marks a moment; it does not send the request yet. Twitch can only look
+  // backwards — at the instant of the press the seconds after it have not happened — so the request
+  // is held back by CLIP_TRAIL_SECONDS. By the time it goes out, the window Twitch returns (which
+  // ends at the request) reaches from CLIP_LEAD_SECONDS before the press through to now.
   function clipLive(btn) {
     var fav = card.querySelector('.fav-btn');
     var broadcasterId = fav && fav.dataset.channelId;
@@ -180,6 +195,36 @@
 
     btn.disabled = true;
     clearResult();
+
+    var el = msgEl();
+    el.classList.remove('error');
+    el.innerHTML = 'Moment marked. Clipping in <b class="live-clip-count"></b>s'
+      + ' <button type="button" class="live-clip-cancel">Cancel</button>'
+      + '<span class="live-clip-note">You’ll get roughly the ' + CLIP_LEAD_SECONDS
+      + ' seconds before you pressed, plus everything up to the moment it fires.</span>';
+
+    var countEl = el.querySelector('.live-clip-count');
+    var left = CLIP_TRAIL_SECONDS;
+    countEl.textContent = String(left);
+
+    var timer = setInterval(function () {
+      left -= 1;
+      if (left > 0) {
+        countEl.textContent = String(left);
+        return;
+      }
+      clearInterval(timer);
+      requestClip(btn, broadcasterId);
+    }, 1000);
+
+    el.querySelector('.live-clip-cancel').addEventListener('click', function () {
+      clearInterval(timer);
+      btn.disabled = false;
+      say('Clip cancelled — nothing was sent to Twitch.');
+    });
+  }
+
+  function requestClip(btn, broadcasterId) {
     say('Asking Twitch to cut the clip...');
 
     fetch('/api/twitch/clip', {
@@ -232,7 +277,7 @@
     btn.type = 'button';
     btn.className = 'live-clip-btn';
     btn.textContent = 'Clip live';
-    btn.title = 'Clip the last few seconds of this stream via Twitch';
+    btn.title = 'Mark this moment — the clip covers the seconds either side of it';
     actions.appendChild(btn);
   }
 
