@@ -2,9 +2,9 @@
 // injects its own styles, so nothing in the existing lookup/favorites code has to change.
 //
 // The panel is built around one decision: where does the clip start. You drag a single handle,
-// preview from there, pick how long you want, and take it. An end-point slider was the earlier
-// design and meant fussing with two handles that could cross each other; a length is easier to
-// think about than an out-point, and the trimmer handles fine-tuning afterwards.
+// watch the player follow it, pick how long you want, and take it. An end-point slider was the
+// earlier design and meant fussing with two handles that could cross each other; a length is easier
+// to think about than an out-point, and the trimmer handles fine-tuning afterwards.
 //
 // Flow: pick a start -> POST /api/clip (queues it) -> poll worker /status -> download link.
 (function () {
@@ -44,22 +44,6 @@
     + '.clip-preview-btn:hover{border-color:var(--accent);color:var(--accent)}'
     + '.clip-msg{font-size:.78rem;color:var(--muted);line-height:1.4}'
     + '.clip-msg.error{color:#ff6b6b}'
-    // Preview opens over the page rather than inside the card. A bigger frame is the whole point:
-    // the platforms paint their own channel name, Follow and Gift a Sub over a small player, and at
-    // card size that chrome covers most of the picture.
-    + '.clip-modal{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.84);'
-    + 'display:flex;align-items:center;justify-content:center;padding:16px}'
-    + '.clip-modal-box{width:100%;max-width:900px;background:#0d0f14;'
-    + 'border:1px solid var(--border);border-radius:10px;overflow:hidden;'
-    + 'display:flex;flex-direction:column}'
-    + '.clip-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;'
-    + 'padding:9px 12px;font-size:.82rem;color:var(--muted)}'
-    + '.clip-modal-close{background:transparent;border:1px solid var(--border);color:var(--text);'
-    + 'width:32px;height:32px;border-radius:8px;font-size:.9rem;line-height:1;cursor:pointer;'
-    + 'flex-shrink:0}'
-    + '.clip-modal-close:hover{border-color:var(--accent);color:var(--accent)}'
-    + '.clip-modal-frame{position:relative;width:100%;aspect-ratio:16/9;background:#000}'
-    + '.clip-modal-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}'
     + '.clip-download{display:inline-block;background:#2ea043;color:#fff;text-decoration:none;'
     + 'padding:8px 14px;border-radius:6px;font-size:.82rem;text-align:center}';
   var s = document.createElement('style');
@@ -105,7 +89,7 @@
   // Keep the slider, the typed box, the length choice and both button labels in agreement, and keep
   // the hidden .clip-end in step with them — that field is what createClip reads, so the rest of the
   // panel can change shape without touching the submit path.
-  function wirePanel(panel, duration) {
+  function wirePanel(panel, card, duration) {
     var startBox = panel.querySelector('.clip-start');
     var startRange = panel.querySelector('.clip-start-range');
     var endBox = panel.querySelector('.clip-end');
@@ -136,6 +120,9 @@
         ? 'Clip ' + actual + 's (end of video)'
         : 'Clip ' + lenLabel(wanted);
       previewBtn.textContent = 'Preview from ' + fmt(start);
+
+      // If a preview is already open on this card, walk it to the new start point.
+      scrubTo(card, start);
     }
 
     if (startRange) startRange.addEventListener('input', function () { update(false); });
@@ -162,80 +149,201 @@
     return h + 'h' + m + 'm' + (total % 60) + 's';
   }
 
-  // Build this card's embed URL starting at a given second. Mirrors what app.js does for the play
-  // button, with the platform's own start-time parameter added. A Twitch clip has no such parameter,
-  // so it always opens from its beginning.
-  function previewUrl(thumb, atSeconds) {
-    var d = thumb.dataset;
-    var host = window.location.hostname;
-    var secs = Math.max(0, Math.floor(atSeconds || 0));
-    if (d.platform === 'youtube') {
-      return 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(d.id)
-        + '?autoplay=1&start=' + secs;
-    }
-    if (d.kind === 'clip') {
-      return 'https://clips.twitch.tv/embed?clip=' + encodeURIComponent(d.id)
-        + '&parent=' + host + '&autoplay=true';
-    }
-    return 'https://player.twitch.tv/?video=' + encodeURIComponent(d.id)
-      + '&parent=' + host + '&autoplay=true&time=' + twitchTime(secs);
+  // --- preview player -------------------------------------------------------
+  //
+  // The player opens in the card's own thumbnail, so it sits directly above the slider and both
+  // stay visible: watching the video while dragging only works if neither hides the other.
+  //
+  // Seeking needs more than a plain embed. YouTube accepts commands over postMessage once the
+  // embed URL carries enablejsapi=1. Twitch has no such hook on a plain iframe, so its own player
+  // script is loaded the first time a Twitch VOD is previewed.
+
+  var TWITCH_SDK = 'https://player.twitch.tv/js/embed/v1.js';
+  var twitchSdk = null; // a promise, so the script is fetched once however many previews are opened
+
+  function loadTwitchSdk() {
+    if (twitchSdk) return twitchSdk;
+    twitchSdk = new Promise(function (resolve, reject) {
+      if (window.Twitch && window.Twitch.Player) return resolve();
+      var tag = document.createElement('script');
+      tag.src = TWITCH_SDK;
+      tag.onload = function () { resolve(); };
+      tag.onerror = function () {
+        twitchSdk = null; // let a later attempt retry rather than failing forever
+        reject(new Error('Could not load the Twitch player.'));
+      };
+      document.head.appendChild(tag);
+    });
+    return twitchSdk;
   }
 
-  // --- preview popup --------------------------------------------------------
-  //
-  // The preview opens over the page instead of inside the card. Two reasons: the card's player is
-  // small enough that the platform's own overlay (channel name, Follow, Gift a Sub) covers the
-  // picture, and a player wedged into the card pushes the controls you are using off screen.
-
-  var openModal = null;
+  // The one preview open at a time: { card, thumb, el, seek(seconds), destroy() }.
+  var active = null;
 
   function closePreview() {
-    if (!openModal) return;
-    // Removing the iframe is what actually stops playback; hiding it would keep the audio running.
-    openModal.remove();
-    openModal = null;
-    document.removeEventListener('keydown', onPreviewKey);
-    document.body.style.overflow = '';
+    if (!active) return;
+    try { active.destroy(); } catch (err) { /* already gone */ }
+    if (active.thumb) {
+      active.thumb.classList.remove('playing');
+      // Take the ✕ with it. app.js's own handler would also clear this, but only when the click
+      // came from there; closing any other way used to strand the button over the thumbnail.
+      var close = active.thumb.querySelector('.close-player-btn');
+      if (close) close.remove();
+    }
+    active = null;
   }
 
-  function onPreviewKey(e) {
-    if (e.key === 'Escape') closePreview();
+  function youtubePlayer(thumb, id, atSeconds) {
+    var iframe = document.createElement('iframe');
+    iframe.className = 'player-iframe';
+    iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+    iframe.allowFullscreen = true;
+    // Muted so hunting through a video isn't a wall of noise; the player's own control unmutes.
+    iframe.src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(id)
+      + '?enablejsapi=1&autoplay=1&mute=1&playsinline=1'
+      + '&origin=' + encodeURIComponent(window.location.origin)
+      + '&start=' + Math.max(0, Math.floor(atSeconds));
+    thumb.appendChild(iframe);
+
+    function command(func, args) {
+      if (!iframe.contentWindow) return;
+      try {
+        iframe.contentWindow.postMessage(
+          JSON.stringify({ event: 'command', func: func, args: args || [] }), '*'
+        );
+      } catch (err) {
+        // The frame isn't listening yet. Dropping this one is fine — dragging sends another.
+      }
+    }
+
+    return {
+      thumb: thumb,
+      el: iframe,
+      seek: function (secs) {
+        command('seekTo', [Math.max(0, secs), true]);
+        command('playVideo');
+      },
+      destroy: function () { iframe.remove(); }
+    };
+  }
+
+  function twitchVodPlayer(thumb, videoId, atSeconds) {
+    var mount = document.createElement('div');
+    mount.className = 'player-iframe';
+    mount.id = 'clip-player-' + Date.now().toString(36);
+    thumb.appendChild(mount);
+
+    var player = new window.Twitch.Player(mount.id, {
+      video: videoId,
+      parent: [window.location.hostname],
+      autoplay: true,
+      muted: true,
+      width: '100%',
+      height: '100%',
+      time: twitchTime(Math.max(0, Math.floor(atSeconds))),
+    });
+
+    return {
+      thumb: thumb,
+      el: mount,
+      seek: function (secs) {
+        try {
+          player.seek(Math.max(0, secs));
+          player.play();
+        } catch (err) {
+          // The player is still starting up; the next drag will land.
+        }
+      },
+      destroy: function () {
+        try { player.pause(); } catch (err) { /* fine */ }
+        mount.remove();
+      }
+    };
+  }
+
+  // Twitch clips have no seek parameter and no seek method, so this one just plays from the start.
+  function twitchClipPlayer(thumb, clipId) {
+    var iframe = document.createElement('iframe');
+    iframe.className = 'player-iframe';
+    iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+    iframe.allowFullscreen = true;
+    iframe.src = 'https://clips.twitch.tv/embed?clip=' + encodeURIComponent(clipId)
+      + '&parent=' + window.location.hostname + '&autoplay=true&muted=true';
+    thumb.appendChild(iframe);
+    return {
+      thumb: thumb,
+      el: iframe,
+      seek: function () { /* not supported by Twitch for clips */ },
+      destroy: function () { iframe.remove(); }
+    };
+  }
+
+  function addCloseButton(thumb) {
+    if (thumb.querySelector('.close-player-btn')) return;
+    // Same class app.js uses, so its existing handler closes this player too.
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'close-player-btn';
+    btn.setAttribute('aria-label', 'Close player');
+    btn.title = 'Close player';
+    btn.textContent = '✕';
+    btn.addEventListener('click', closePreview);
+    thumb.appendChild(btn);
   }
 
   function openPreview(card, atSeconds) {
     var thumb = card.querySelector('.thumb-wrap');
     if (!thumb || !thumb.dataset.id) return;
 
-    closePreview(); // never stack two players
+    closePreview();
 
-    var modal = document.createElement('div');
-    modal.className = 'clip-modal';
-    modal.innerHTML = '<div class="clip-modal-box" role="dialog" aria-modal="true"'
-      + ' aria-label="Clip preview">'
-      + '<div class="clip-modal-head"><span class="clip-modal-title"></span>'
-      + '<button type="button" class="clip-modal-close" aria-label="Close preview">✕</button>'
-      + '</div>'
-      + '<div class="clip-modal-frame"></div></div>';
-    modal.querySelector('.clip-modal-title').textContent = 'Preview from ' + fmt(atSeconds);
-
-    var iframe = document.createElement('iframe');
-    iframe.src = previewUrl(thumb, atSeconds);
-    iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
-    iframe.allowFullscreen = true;
-    modal.querySelector('.clip-modal-frame').appendChild(iframe);
-
-    modal.addEventListener('click', function (e) {
-      // The backdrop and the ✕ close it; a click on the player itself must not.
-      if (e.target === modal || e.target.closest('.clip-modal-close')) closePreview();
+    // Clear any player app.js opened from the play button, so only one thing is ever running.
+    document.querySelectorAll('.thumb-wrap.playing').forEach(function (el) {
+      el.classList.remove('playing');
+      var frame = el.querySelector('.player-iframe');
+      if (frame) frame.remove();
+      var close = el.querySelector('.close-player-btn');
+      if (close) close.remove();
     });
 
-    document.addEventListener('keydown', onPreviewKey);
-    document.body.style.overflow = 'hidden'; // stop the page scrolling behind the popup
-    document.body.appendChild(modal);
-    openModal = modal;
+    var d = thumb.dataset;
 
-    var closeBtn = modal.querySelector('.clip-modal-close');
-    if (closeBtn) closeBtn.focus();
+    function ready(handle) {
+      handle.card = card;
+      active = handle;
+      thumb.classList.add('playing');
+      addCloseButton(thumb);
+    }
+
+    if (d.platform === 'youtube') return ready(youtubePlayer(thumb, d.id, atSeconds));
+    if (d.kind === 'clip') return ready(twitchClipPlayer(thumb, d.id));
+
+    loadTwitchSdk().then(function () {
+      ready(twitchVodPlayer(thumb, d.id, atSeconds));
+    }).catch(function () {
+      // Fall back to the plain embed: it can't be scrubbed, but it still shows the right moment.
+      var iframe = document.createElement('iframe');
+      iframe.className = 'player-iframe';
+      iframe.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+      iframe.allowFullscreen = true;
+      iframe.src = 'https://player.twitch.tv/?video=' + encodeURIComponent(d.id)
+        + '&parent=' + window.location.hostname + '&autoplay=true&muted=true'
+        + '&time=' + twitchTime(Math.max(0, Math.floor(atSeconds)));
+      thumb.appendChild(iframe);
+      ready({ thumb: thumb, el: iframe, seek: function () {}, destroy: function () { iframe.remove(); } });
+    });
+  }
+
+  // Dragging fires continuously, and seeking on every pixel makes the player stutter and fight the
+  // handle. Waiting for a pause in the movement gives the picture a beat to catch up instead.
+  var scrubTimer = null;
+  function scrubTo(card, seconds) {
+    if (!active || active.card !== card) return;
+    if (!document.contains(active.el)) { active = null; return; } // closed from elsewhere
+    clearTimeout(scrubTimer);
+    scrubTimer = setTimeout(function () {
+      if (active && active.card === card) active.seek(seconds);
+    }, 180);
   }
 
   function infoFor(card) {
@@ -391,7 +499,7 @@
       panel.innerHTML = panelHtml(duration);
 
       card.querySelector('.body').appendChild(panel);
-      wirePanel(panel, duration);
+      wirePanel(panel, card, duration);
       open.classList.add('open');
       return;
     }
