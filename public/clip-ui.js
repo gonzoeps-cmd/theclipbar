@@ -100,7 +100,7 @@
 
     // fromTyping says the box is the authority for this update. Without it the slider's position
     // would always win and a typed time would be overwritten the moment it was entered.
-    function update(fromTyping) {
+    function update(fromTyping, settled) {
       var start = null;
       if (fromTyping) start = parseTime(startBox.value);
       if (start === null) start = startRange ? Number(startRange.value) : (parseTime(startBox.value) || 0);
@@ -121,13 +121,22 @@
         : 'Clip ' + lenLabel(wanted);
       previewBtn.textContent = 'Preview from ' + fmt(start);
 
-      // If a preview is already open on this card, walk it to the new start point.
-      scrubTo(card, start);
+      // If a preview is already open on this card, walk the picture to the new point as the
+      // handle moves, not after it stops.
+      scrubTo(card, start, !!settled);
     }
 
-    if (startRange) startRange.addEventListener('input', function () { update(false); });
+    if (startRange) {
+      // "input" fires all through the drag. The rest mean the handle was let go — change is
+      // unreliable on mobile (it can fire mid-drag), so the pointer events back it up and the
+      // quiet period in scrubTo() sorts out the difference.
+      startRange.addEventListener('input', function () { update(false, false); });
+      startRange.addEventListener('change', function () { update(false, true); });
+      startRange.addEventListener('pointerup', function () { update(false, true); });
+      startRange.addEventListener('touchend', function () { update(false, true); });
+    }
     // On "change" rather than "input" so rewriting the box doesn't fight them mid-type.
-    startBox.addEventListener('change', function () { update(true); });
+    startBox.addEventListener('change', function () { update(true, true); });
 
     for (var i = 0; i < lenBtns.length; i += 1) {
       lenBtns[i].addEventListener('click', function () {
@@ -135,11 +144,11 @@
         for (var j = 0; j < lenBtns.length; j += 1) {
           lenBtns[j].classList.toggle('active', lenBtns[j] === this);
         }
-        update(false);
+        update(false, true);
       });
     }
 
-    update(false);
+    update(false, true);
   }
 
   // Twitch takes a start time as 1h2m3s rather than plain seconds.
@@ -177,7 +186,7 @@
     return twitchSdk;
   }
 
-  // The one preview open at a time: { card, thumb, el, seek(seconds), destroy() }.
+  // The one preview open at a time: { card, thumb, el, seek(seconds, settled), destroy() }.
   var active = null;
 
   function closePreview() {
@@ -219,8 +228,11 @@
     return {
       thumb: thumb,
       el: iframe,
-      seek: function (secs) {
-        command('seekTo', [Math.max(0, secs), true]);
+      // settled=false is YouTube's documented mode for a progress-bar drag: it seeks within what
+      // is already buffered, so the picture moves at once instead of waiting on a fetch. The true
+      // seek is sent when the handle is let go.
+      seek: function (secs, settled) {
+        command('seekTo', [Math.max(0, secs), !!settled]);
         command('playVideo');
       },
       destroy: function () { iframe.remove(); }
@@ -246,6 +258,7 @@
     return {
       thumb: thumb,
       el: mount,
+      // Twitch's player has no buffered-only seek, so every one of these is a real fetch.
       seek: function (secs) {
         try {
           player.seek(Math.max(0, secs));
@@ -334,16 +347,57 @@
     });
   }
 
-  // Dragging fires continuously, and seeking on every pixel makes the player stutter and fight the
-  // handle. Waiting for a pause in the movement gives the picture a beat to catch up instead.
+  // The picture has to move WHILE the handle moves, not once it stops. So live movement is
+  // throttled rather than debounced: the first move goes straight through and the rest go at a
+  // steady rate for as long as the drag lasts.
+  //
+  // It cannot be frame-by-frame. The video is inside YouTube's or Twitch's own player and every
+  // seek is a network fetch, so the picture steps along behind the handle rather than gliding with
+  // it. SCRUB_MS is the knob: lower feels more live but asks the player for more than it can serve
+  // and it starts to stutter.
+  var SCRUB_MS = 120;
+
+  // Landing on the exact frame is a separate, more expensive seek, and it waits for the handle to
+  // be still. "change" is supposed to mean released, but several mobile browsers fire it on every
+  // movement, which would make each drag position a full fetch — so a quiet period decides it
+  // instead of trusting the event.
+  var SETTLE_MS = 160;
+
   var scrubTimer = null;
-  function scrubTo(card, seconds) {
+  var settleTimer = null;
+  var scrubLast = 0;
+
+  function scrubTo(card, seconds, settled) {
     if (!active || active.card !== card) return;
     if (!document.contains(active.el)) { active = null; return; } // closed from elsewhere
+
+    // The landing is armed by EVERY call, live or not, and every call clears the previous one. So
+    // it fires once the handle has been still for SETTLE_MS, whether or not a release event ever
+    // arrives — relying on one would leave the video parked on a buffered-only position on any
+    // browser that doesn't send it.
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(function () {
+      if (!active || active.card !== card) return;
+      scrubLast = Date.now();
+      active.seek(seconds, true);
+    }, SETTLE_MS);
+
+    if (settled) return; // a release adds nothing live; the landing above is the whole job
+
     clearTimeout(scrubTimer);
+
+    var since = Date.now() - scrubLast;
+    if (since >= SCRUB_MS) {
+      scrubLast = Date.now();
+      active.seek(seconds, false);
+      return;
+    }
+    // Mid-throttle: hold this position so the last sliver of a drag isn't dropped.
     scrubTimer = setTimeout(function () {
-      if (active && active.card === card) active.seek(seconds);
-    }, 180);
+      if (!active || active.card !== card) return;
+      scrubLast = Date.now();
+      active.seek(seconds, false);
+    }, SCRUB_MS - since);
   }
 
   function infoFor(card) {
