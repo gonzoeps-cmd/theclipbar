@@ -25,7 +25,7 @@ const PORT = process.env.PORT || 3001;
 const BIN_DIR = path.join(__dirname, '..', 'bin');
 const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp');
 const FFMPEG_PATH = path.join(BIN_DIR, 'ffmpeg');
-const AUTO_EDITOR_PATH = path.join(BIN_DIR, 'auto-editor');
+const FFPROBE_PATH = path.join(BIN_DIR, 'ffprobe');
 const CLIPS_DIR = path.join(os.tmpdir(), 'theclipbar-clips');
 const CLIP_TTL_MS = 60 * 60 * 1000; // sweep finished clips after an hour
 const JOB_TIMEOUT_MS = 10 * 60 * 1000; // don't let a stuck download run forever
@@ -256,7 +256,7 @@ app.get('/health', (req, res) => {
     ok: true,
     ytdlp: fs.existsSync(YTDLP_PATH),
     ffmpeg: fs.existsSync(FFMPEG_PATH),
-    autoEditor: fs.existsSync(AUTO_EDITOR_PATH),
+    ffprobe: fs.existsSync(FFPROBE_PATH),
     redis: Boolean(process.env.REDIS_URL),
   });
 });
@@ -363,18 +363,137 @@ app.post('/trim', express.json(), (req, res) => {
   });
 });
 
-// Cut the dead air out of a clip that's already been downloaded. auto-editor reads the clip's audio,
-// works out which stretches are quiet, and rebuilds the file without them.
+// --- auto-cut (remove dead air) -------------------------------------------
 //
-// This one DOES re-encode, unlike /trim. Re-encoding is what saturated this instance's CPU and got
-// the service killed mid-job in the past, so three guards keep it in its lane: one at a time, a hard
-// timeout, and the "veryfast" encoder preset. On a 30-second clip it lands in a few seconds.
+// Finds the quiet stretches in a clip and rebuilds it without them, in two ffmpeg passes: one that
+// only decodes the audio to locate silence, and one that cuts and re-encodes.
+//
+// This used to shell out to auto-editor. Its Linux binary needs a newer system C library than this
+// machine has, so it never ran here at all; ffmpeg is already installed, already works, and can do
+// the same job with no extra download.
+//
+// This DOES re-encode, unlike /trim. Re-encoding is what saturated this instance's CPU and got the
+// service killed mid-job in the past, so the same guards apply: one at a time, a hard timeout, and
+// the "veryfast" preset.
+
 const AUTOCUT_TIMEOUT_MS = 150000;
+// Each kept piece adds four filters to the graph. Past this the graph costs more than the cut is
+// worth, and a clip chopped into hundreds of pieces is unwatchable anyway.
+const AUTOCUT_MAX_SEGMENTS = 80;
 let autocutBusy = false;
 
-app.post('/autocut', express.json(), (req, res) => {
-  if (!fs.existsSync(AUTO_EDITOR_PATH)) {
-    return res.status(503).json({ error: 'The auto-cut tool is not installed on the worker.' });
+function probeDuration(file) {
+  return new Promise((resolve) => {
+    const child = spawn(FFPROBE_PATH, [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=nw=1:nk=1',
+      file,
+    ]);
+    let out = '';
+    child.stdout.on('data', (c) => { out += c.toString(); });
+    child.on('error', () => resolve(null));
+    child.on('close', () => {
+      const secs = Number(String(out).trim());
+      resolve(Number.isFinite(secs) && secs > 0 ? secs : null);
+    });
+  });
+}
+
+// Pass one. silencedetect writes its findings to stderr as it decodes; nothing is written to disk
+// because the output goes to the null muxer.
+function detectSilence(file, noiseDb, minSilence) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG_PATH, [
+      '-v', 'info',
+      '-i', file,
+      '-af', `silencedetect=noise=${noiseDb}dB:d=${minSilence}`,
+      '-threads', '1',
+      '-f', 'null',
+      '-',
+    ]);
+
+    let text = '';
+    child.stderr.on('data', (c) => { text += c.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error('silence detection failed'));
+
+      // A silence_start with no matching silence_end means the clip ends quiet; that run is closed
+      // off against the clip's duration by the caller.
+      const spans = [];
+      let open = null;
+      const re = /silence_(start|end):\s*(-?[\d.]+)/g;
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const at = Number(m[2]);
+        if (!Number.isFinite(at)) continue;
+        if (m[1] === 'start') open = Math.max(0, at);
+        else if (open !== null) { spans.push({ start: open, end: at }); open = null; }
+      }
+      if (open !== null) spans.push({ start: open, end: Infinity });
+      resolve(spans);
+    });
+  });
+}
+
+// The stretches that are NOT silent — the complement of what silencedetect reported. Deliberately
+// unpadded: this is the measure of how much real content the clip holds, and padding it first would
+// manufacture content out of a clip that is silent end to end.
+function loudRuns(spans, duration) {
+  const runs = [];
+  let cursor = 0;
+  for (const span of spans) {
+    const from = Math.max(0, Math.min(span.start, duration));
+    const to = Math.min(span.end === Infinity ? duration : span.end, duration);
+    if (from > cursor) runs.push({ start: cursor, end: from });
+    cursor = Math.max(cursor, to);
+  }
+  if (cursor < duration) runs.push({ start: cursor, end: duration });
+  return runs;
+}
+
+// Pad each run outwards into the surrounding quiet, because cutting exactly on the word boundary
+// sounds clipped, then join any runs the padding made touch and drop the slivers.
+function padRuns(runs, duration, margin, minKeep) {
+  const padded = runs.map((k) => ({
+    start: Math.max(0, k.start - margin),
+    end: Math.min(duration, k.end + margin),
+  }));
+
+  const merged = [];
+  for (const k of padded) {
+    const last = merged[merged.length - 1];
+    if (last && k.start <= last.end + 0.01) last.end = Math.max(last.end, k.end);
+    else merged.push({ start: k.start, end: k.end });
+  }
+  return merged.filter((k) => k.end - k.start >= minKeep);
+}
+
+function totalOf(runs) {
+  return runs.reduce((sum, k) => sum + (k.end - k.start), 0);
+}
+
+// One trim per kept piece for video and audio, then concat. Written to a file rather than passed as
+// an argument because the graph grows past a comfortable command-line length quickly.
+function filterScript(keeps, hasAudio) {
+  const parts = [];
+  keeps.forEach((k, i) => {
+    parts.push(`[0:v]trim=start=${k.start.toFixed(3)}:end=${k.end.toFixed(3)},setpts=PTS-STARTPTS[v${i}];`);
+    if (hasAudio) {
+      parts.push(`[0:a]atrim=start=${k.start.toFixed(3)}:end=${k.end.toFixed(3)},asetpts=PTS-STARTPTS[a${i}];`);
+    }
+  });
+  const labels = keeps.map((_, i) => (hasAudio ? `[v${i}][a${i}]` : `[v${i}]`)).join('');
+  parts.push(hasAudio
+    ? `${labels}concat=n=${keeps.length}:v=1:a=1[outv][outa]`
+    : `${labels}concat=n=${keeps.length}:v=1:a=0[outv]`);
+  return parts.join('\n');
+}
+
+app.post('/autocut', express.json(), async (req, res) => {
+  if (!fs.existsSync(FFMPEG_PATH) || !fs.existsSync(FFPROBE_PATH)) {
+    return res.status(503).json({ error: 'The worker is missing ffmpeg.' });
   }
   if (autocutBusy) {
     return res.status(429).json({ error: 'Another clip is being auto-cut right now — try again in a moment.' });
@@ -392,78 +511,123 @@ app.post('/autocut', express.json(), (req, res) => {
     return res.status(404).json({ error: 'That clip is no longer on the server — make a new one.' });
   }
 
-  // Padding left either side of the kept audio. Cutting exactly on the word boundary sounds
-  // clipped, so this small margin is what makes the result listenable rather than choppy.
+  // Padding kept either side of speech.
   let margin = Number(body.margin);
   if (!Number.isFinite(margin) || margin < 0 || margin > 2) margin = 0.2;
 
-  // How loud a moment has to be to count as "not silence", as a fraction of full scale. Lower keeps
-  // more of the clip, higher cuts more aggressively.
-  let threshold = Number(body.threshold);
-  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 0.5) threshold = 0.04;
+  // How quiet counts as silence, in dBFS. Lower (more negative) keeps more.
+  let noiseDb = Number(body.noiseDb);
+  if (!Number.isFinite(noiseDb) || noiseDb > -5 || noiseDb < -70) noiseDb = -32;
+
+  // A gap has to last this long before it is worth cutting; shorter ones are natural speech pauses.
+  let minSilence = Number(body.minSilence);
+  if (!Number.isFinite(minSilence) || minSilence < 0.1 || minSilence > 5) minSilence = 0.4;
 
   const outName = `${name.replace(/\.mp4$/, '')}-a${Date.now().toString(36)}.mp4`;
   const outPath = path.join(CLIPS_DIR, outName);
-
-  const args = [
-    source,
-    '-o', outPath,
-    '--edit', `audio:threshold=${threshold}`,
-    '--margin', `${margin}s`,
-    '-preset', 'veryfast', // keeps the encode cheap on a shared CPU
-    '--faststart', // so the browser can start playing the result without downloading all of it
-    '--progress', 'none', // no progress bar to parse out of the output
-    '-q',
-  ];
+  const scriptPath = path.join(CLIPS_DIR, `${outName}.filter.txt`);
 
   autocutBusy = true;
-  const child = spawn(AUTO_EDITOR_PATH, args);
-
-  let tail = '';
-  const collect = (chunk) => {
-    tail = (tail + chunk.toString()).slice(-2000);
-  };
-  child.stdout.on('data', collect);
-  child.stderr.on('data', collect);
-
+  let child = null;
+  let answered = false;
   const killer = setTimeout(() => {
     console.error('[worker] autocut timed out — killing it');
-    child.kill('SIGKILL');
+    if (child) child.kill('SIGKILL');
   }, AUTOCUT_TIMEOUT_MS);
 
-  // A spawn error and a close can both fire, so funnel every outcome through one reply. Without
-  // this, a failure to start would try to send two responses and leave autocutBusy stuck on.
-  let answered = false;
   function answer(status, payload) {
     if (answered) return;
     answered = true;
     clearTimeout(killer);
     autocutBusy = false;
+    try { if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath); } catch { /* best effort */ }
+    if (status !== 200) {
+      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* best effort */ }
+    }
     res.status(status).json(payload);
   }
 
-  child.on('error', (err) => {
-    console.error('[worker] autocut could not start:', err.message);
-    answer(500, { error: 'Could not start the auto-cutter.' });
-  });
+  try {
+    const duration = await probeDuration(source);
+    if (!duration) return answer(502, { error: "Couldn't read that clip." });
 
-  child.on('close', (code) => {
-    if (code !== 0 || !fs.existsSync(outPath)) {
-      const plain = tail.replace(/\x1b\[[0-9;]*m/g, ''); // strip the tool's colour codes
-      console.error(`[worker] autocut failed (code=${code}):`, plain.slice(-800));
-
-      // auto-editor exits non-zero when every moment was below the threshold. That's a normal
-      // outcome for a quiet clip, not a bug, so it gets its own plain-English answer.
-      if (/Timeline is empty/i.test(plain)) {
-        return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
-      }
-      return answer(502, { error: 'Auto-cut failed on this clip.' });
+    const hasAudio = await new Promise((resolve) => {
+      const p = spawn(FFPROBE_PATH, [
+        '-v', 'error', '-select_streams', 'a',
+        '-show_entries', 'stream=index', '-of', 'csv=p=0', source,
+      ]);
+      let out = '';
+      p.stdout.on('data', (c) => { out += c.toString(); });
+      p.on('error', () => resolve(false));
+      p.on('close', () => resolve(out.trim().length > 0));
+    });
+    if (!hasAudio) {
+      return answer(422, { error: 'This clip has no sound, so there is no dead air to find.' });
     }
 
-    const { size } = fs.statSync(outPath);
-    console.log(`[worker] autocut ${name} -> ${outName} (${size} bytes)`);
-    answer(200, { file: outName, bytes: size });
-  });
+    const spans = await detectSilence(source, noiseDb, minSilence);
+    const loud = loudRuns(spans, duration);
+
+    // Judge "is there anything here" on the unpadded runs. A silent clip still reports a few
+    // milliseconds of non-silence at the end from the audio codec's own padding, and once margins
+    // were added that turned into a keep-segment and a "cut" file of pure silence.
+    if (totalOf(loud) < 0.25) {
+      return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
+    }
+
+    const keeps = padRuns(loud, duration, margin, 0.15);
+    if (!keeps.length) {
+      return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
+    }
+    const kept = totalOf(keeps);
+    if (duration - kept < 0.3) {
+      return answer(422, { error: 'No dead air found in this clip — nothing to cut.' });
+    }
+    if (keeps.length > AUTOCUT_MAX_SEGMENTS) {
+      return answer(422, {
+        error: 'This clip is too choppy to auto-cut cleanly — trim it by hand instead.',
+      });
+    }
+
+    fs.writeFileSync(scriptPath, filterScript(keeps, hasAudio));
+
+    const args = [
+      '-y', '-v', 'error',
+      '-i', source,
+      '-filter_complex_script', scriptPath,
+      '-map', '[outv]', '-map', '[outa]',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-movflags', '+faststart', // so the browser can start playing without the whole file
+      '-threads', '1',
+      outPath,
+    ];
+
+    child = spawn(FFMPEG_PATH, args);
+    let tail = '';
+    child.stderr.on('data', (c) => { tail = (tail + c.toString()).slice(-2000); });
+
+    child.on('error', (err) => {
+      console.error('[worker] autocut could not start:', err.message);
+      answer(500, { error: 'Could not start the auto-cutter.' });
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0 || !fs.existsSync(outPath)) {
+        console.error(`[worker] autocut failed (code=${code}):`, tail.slice(-800));
+        return answer(502, { error: 'Auto-cut failed on this clip.' });
+      }
+      const { size } = fs.statSync(outPath);
+      console.log(
+        `[worker] autocut ${name} -> ${outName}: ${keeps.length} segment(s), `
+        + `${duration.toFixed(1)}s -> ${kept.toFixed(1)}s, ${size} bytes`
+      );
+      answer(200, { file: outName, bytes: size, segments: keeps.length, removed: duration - kept });
+    });
+  } catch (err) {
+    console.error('[worker] autocut error:', err && err.message);
+    answer(502, { error: 'Auto-cut failed on this clip.' });
+  }
 });
 
 app.listen(PORT, () => {
@@ -471,7 +635,7 @@ app.listen(PORT, () => {
   console.log(
     `[worker] yt-dlp: ${fs.existsSync(YTDLP_PATH) ? 'ready' : 'MISSING'}`
       + ` | ffmpeg: ${fs.existsSync(FFMPEG_PATH) ? 'ready' : 'MISSING'}`
-      + ` | auto-editor: ${fs.existsSync(AUTO_EDITOR_PATH) ? 'ready' : 'MISSING'}`
+      + ` | ffprobe: ${fs.existsSync(FFPROBE_PATH) ? 'ready' : 'MISSING'}`
   );
 });
 
