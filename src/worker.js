@@ -437,6 +437,43 @@ function detectSilence(file, noiseDb, minSilence) {
   });
 }
 
+// How loud this clip is overall. Needed because "silence" is relative: a podcast recorded in a
+// quiet room and a stream with game audio under every pause have completely different floors, and
+// one fixed threshold cannot serve both.
+function measureLevels(file) {
+  return new Promise((resolve) => {
+    const child = spawn(FFMPEG_PATH, [
+      '-v', 'info', '-i', file, '-af', 'volumedetect', '-threads', '1', '-f', 'null', '-',
+    ]);
+    let text = '';
+    child.stderr.on('data', (c) => { text += c.toString(); });
+    child.on('error', () => resolve(null));
+    child.on('close', () => {
+      const mean = /mean_volume:\s*(-?[\d.]+) dB/.exec(text);
+      const max = /max_volume:\s*(-?[\d.]+) dB/.exec(text);
+      resolve({
+        mean: mean ? Number(mean[1]) : null,
+        max: max ? Number(max[1]) : null,
+      });
+    });
+  });
+}
+
+// Thresholds to try, strictest first. The fixed -32dB suits a clean recording; the rest are pinned
+// to this clip's own average so a noisy one still gets a fair hearing. Ordering matters: the first
+// threshold that finds a worthwhile cut without gutting the clip wins, so a strict pass that works
+// is always preferred to a permissive one that cuts too much.
+function thresholdLadder(levels) {
+  const ladder = [-32];
+  if (levels && Number.isFinite(levels.mean)) {
+    ladder.push(levels.mean - 12, levels.mean - 8, levels.mean - 5, levels.mean - 2);
+  }
+  return ladder
+    .map((db) => Math.round(Math.min(-6, Math.max(-60, db))))
+    .filter((db, i, all) => all.indexOf(db) === i)
+    .sort((a, b) => a - b);
+}
+
 // The stretches that are NOT silent — the complement of what silencedetect reported. Deliberately
 // unpadded: this is the measure of how much real content the clip holds, and padding it first would
 // manufacture content out of a clip that is silent end to end.
@@ -519,7 +556,8 @@ app.post('/autocut', express.json(), async (req, res) => {
   let margin = Number(body.margin);
   if (!Number.isFinite(margin) || margin < 0 || margin > 2) margin = 0.2;
 
-  // How quiet counts as silence, in dBFS. Lower (more negative) keeps more.
+  // How quiet counts as silence, in dBFS. Only used when the caller pins it; otherwise the ladder
+  // below decides from the clip's own levels.
   let noiseDb = Number(body.noiseDb);
   if (!Number.isFinite(noiseDb) || noiseDb > -5 || noiseDb < -70) noiseDb = -32;
 
@@ -567,29 +605,68 @@ app.post('/autocut', express.json(), async (req, res) => {
       return answer(422, { error: 'This clip has no sound, so there is no dead air to find.' });
     }
 
-    const spans = await detectSilence(source, noiseDb, minSilence);
-    const loud = loudRuns(spans, duration);
+    const levels = await measureLevels(source);
+    // A threshold the caller pinned is used as-is; otherwise work down the ladder.
+    const ladder = Number.isFinite(Number(body.noiseDb)) ? [noiseDb] : thresholdLadder(levels);
 
-    // Judge "is there anything here" on the unpadded runs. A silent clip still reports a few
-    // milliseconds of non-silence at the end from the audio codec's own padding, and once margins
-    // were added that turned into a keep-segment and a "cut" file of pure silence.
-    if (totalOf(loud) < 0.25) {
-      return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
+    let chosen = null;
+    let bestNote = '';
+    for (const db of ladder) {
+      const spans = await detectSilence(source, db, minSilence);
+      const loud = loudRuns(spans, duration);
+      const loudTotal = totalOf(loud);
+      const keeps = padRuns(loud, duration, margin, 0.15);
+      const kept = totalOf(keeps);
+      const removed = duration - kept;
+
+      // Logged for every attempt on purpose: when this reports nothing to cut, these lines are the
+      // only way to tell a clip with no pauses from a threshold that was set wrong.
+      console.log(
+        `[worker] autocut ${name} @ ${db}dB: ${spans.length} gap(s), `
+        + `${keeps.length} segment(s), would remove ${removed.toFixed(2)}s of ${duration.toFixed(1)}s`
+      );
+
+      // Silent end to end. A more permissive threshold can only make that worse.
+      if (loudTotal < 0.25) {
+        bestNote = 'silent';
+        break;
+      }
+      if (keeps.length > AUTOCUT_MAX_SEGMENTS) {
+        bestNote = 'choppy';
+        continue;
+      }
+      // Guard against a threshold so loose it starts eating speech.
+      if (kept < duration * 0.25) {
+        bestNote = 'overcut';
+        break;
+      }
+      if (removed >= 0.3) {
+        chosen = { db, keeps, kept, removed };
+        break;
+      }
     }
 
-    const keeps = padRuns(loud, duration, margin, 0.15);
-    if (!keeps.length) {
-      return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
-    }
-    const kept = totalOf(keeps);
-    if (duration - kept < 0.3) {
-      return answer(422, { error: 'No dead air found in this clip — nothing to cut.' });
-    }
-    if (keeps.length > AUTOCUT_MAX_SEGMENTS) {
+    if (!chosen) {
+      if (bestNote === 'silent') {
+        return answer(422, { error: 'The whole clip was quiet — there was no dead air to cut.' });
+      }
+      if (bestNote === 'choppy') {
+        return answer(422, {
+          error: 'This clip is too choppy to auto-cut cleanly — trim it by hand instead.',
+        });
+      }
+      // The honest answer: nothing in this clip ever drops quiet enough. Naming the level makes it
+      // clear this is about what is under the pauses, not a broken button.
+      const mean = levels && Number.isFinite(levels.mean) ? `${levels.mean.toFixed(1)}dB` : 'unknown';
+      console.log(`[worker] autocut ${name}: nothing cuttable (mean ${mean}, tried ${ladder.join(', ')}dB)`);
       return answer(422, {
-        error: 'This clip is too choppy to auto-cut cleanly — trim it by hand instead.',
+        error: 'No pauses quiet enough to cut. If music or game audio keeps playing under them,'
+          + ' that counts as sound — this removes silence, not just the talking stopping.',
       });
     }
+
+    const keeps = chosen.keeps;
+    const kept = chosen.kept;
 
     const args = [
       '-y', '-v', 'error',
@@ -619,7 +696,7 @@ app.post('/autocut', express.json(), async (req, res) => {
       }
       const { size } = fs.statSync(outPath);
       console.log(
-        `[worker] autocut ${name} -> ${outName}: ${keeps.length} segment(s), `
+        `[worker] autocut ${name} -> ${outName}: ${keeps.length} segment(s) @ ${chosen.db}dB, `
         + `${duration.toFixed(1)}s -> ${kept.toFixed(1)}s, ${size} bytes`
       );
       answer(200, { file: outName, bytes: size, segments: keeps.length, removed: duration - kept });
