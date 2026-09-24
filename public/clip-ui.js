@@ -121,8 +121,8 @@
         : 'Clip ' + lenLabel(wanted);
       previewBtn.textContent = 'Preview from ' + fmt(start);
 
-      // If a preview is already open on this card, walk the picture to the new point as the
-      // handle moves, not after it stops.
+      // Walk the picture to the new point as the handle moves, not after it stops. On a live drag
+      // this also starts the player if one isn't running yet.
       scrubTo(card, start, !!settled);
     }
 
@@ -188,6 +188,9 @@
 
   // The one preview open at a time: { card, thumb, el, seek(seconds, settled), destroy() }.
   var active = null;
+  // Opening a Twitch player waits on their script, so a drag would otherwise ask for a new player
+  // on every movement while the first is still loading.
+  var opening = false;
 
   function closePreview() {
     if (!active) return;
@@ -320,10 +323,12 @@
     });
 
     var d = thumb.dataset;
+    opening = true;
 
     function ready(handle) {
       handle.card = card;
       active = handle;
+      opening = false;
       thumb.classList.add('playing');
       addCloseButton(thumb);
     }
@@ -368,8 +373,18 @@
   var scrubLast = 0;
 
   function scrubTo(card, seconds, settled) {
-    if (!active || active.card !== card) return;
-    if (!document.contains(active.el)) { active = null; return; } // closed from elsewhere
+    if (active && !document.contains(active.el)) active = null; // closed from elsewhere
+
+    // No player running on this card? Start one where the handle is. Moving the slider IS the
+    // gesture for finding a moment — having to press Preview first meant the video just sat on its
+    // thumbnail while the handle moved, which looked like nothing was connected at all.
+    //
+    // Only a live drag does this. Opening the panel and choosing a length both settle too, and
+    // neither should start a video playing on its own.
+    if (!active || active.card !== card) {
+      if (!settled && !opening) openPreview(card, seconds);
+      return;
+    }
 
     // The landing is armed by EVERY call, live or not, and every call clears the previous one. So
     // it fires once the handle has been still for SETTLE_MS, whether or not a release event ever
