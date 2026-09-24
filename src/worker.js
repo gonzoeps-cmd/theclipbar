@@ -474,8 +474,12 @@ function totalOf(runs) {
   return runs.reduce((sum, k) => sum + (k.end - k.start), 0);
 }
 
-// One trim per kept piece for video and audio, then concat. Written to a file rather than passed as
-// an argument because the graph grows past a comfortable command-line length quickly.
+// One trim per kept piece for video and audio, then concat.
+//
+// Passed inline as a single -filter_complex argument. A file via -filter_complex_script would read
+// better, but that option was removed in ffmpeg 8 and this machine runs a build that no longer has
+// it. Inline works on every version, and the graph tops out around 12KB at AUTOCUT_MAX_SEGMENTS,
+// far short of any command-line limit.
 function filterScript(keeps, hasAudio) {
   const parts = [];
   keeps.forEach((k, i) => {
@@ -525,7 +529,6 @@ app.post('/autocut', express.json(), async (req, res) => {
 
   const outName = `${name.replace(/\.mp4$/, '')}-a${Date.now().toString(36)}.mp4`;
   const outPath = path.join(CLIPS_DIR, outName);
-  const scriptPath = path.join(CLIPS_DIR, `${outName}.filter.txt`);
 
   autocutBusy = true;
   let child = null;
@@ -540,7 +543,6 @@ app.post('/autocut', express.json(), async (req, res) => {
     answered = true;
     clearTimeout(killer);
     autocutBusy = false;
-    try { if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath); } catch { /* best effort */ }
     if (status !== 200) {
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* best effort */ }
     }
@@ -589,12 +591,10 @@ app.post('/autocut', express.json(), async (req, res) => {
       });
     }
 
-    fs.writeFileSync(scriptPath, filterScript(keeps, hasAudio));
-
     const args = [
       '-y', '-v', 'error',
       '-i', source,
-      '-filter_complex_script', scriptPath,
+      '-filter_complex', filterScript(keeps, hasAudio),
       '-map', '[outv]', '-map', '[outa]',
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
       '-c:a', 'aac', '-b:a', '128k',
