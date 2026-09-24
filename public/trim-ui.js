@@ -14,12 +14,11 @@
 (function () {
   'use strict';
 
-  // Cut dead air is off. auto-editor's Linux binary needs a newer system C library than Render's
-  // machine has (GLIBC_2.38), so every run failed there; every published release back to v29 has
-  // the same requirement, so there is no older build to fall back to. The button is hidden rather
-  // than left to fail. Flip this back to true once the silence cutting is done with ffmpeg, which
-  // is already installed and working on the worker.
-  var AUTOCUT_ENABLED = false;
+  // Kill switch for the Cut dead air button. Kept because this feature leans on the worker: an
+  // earlier build shelled out to auto-editor, whose Linux binary needs a newer system C library
+  // than Render's machine has, so every run failed there and the button had to be hidden. The
+  // worker now finds and cuts the silence with ffmpeg instead.
+  var AUTOCUT_ENABLED = true;
 
   var channelCard = document.getElementById('channel-card');
   var results = document.getElementById('results');
