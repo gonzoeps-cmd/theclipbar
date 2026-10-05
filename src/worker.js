@@ -292,8 +292,12 @@ function safeDownloadName(raw, fallback) {
   const cleaned = String(raw || '')
     // Pull accents off their letters first, so "Pokémon" becomes "Pokemon" rather than "Pokmon" when
     // the stripping below runs. Stream titles are full of accents, emoji and decoration.
+    //
+    // \\p{M} rather than the combining-mark range written out: it means the same thing, and it keeps
+    // this line made of visible characters. The explicit range puts the marks themselves in the
+    // source, where they render as nothing and do not survive being copied around.
     .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/\\p{M}+/gu, '')
     .replace(/\.mp4$/i, '')
     // Everything outside this set becomes a space, and runs of space collapse — so an emoji-heavy
     // title comes out readable instead of as a row of dashes.
