@@ -283,6 +283,17 @@ app.get('/status/:jobId', async (req, res) => {
   }
 });
 
+// The combining accent marks, built from their code points instead of written into a regex literal.
+// Both of the obvious spellings have burned this file already: putting the marks in the source fills
+// the line with characters that render as nothing, and a backslash escape has to survive every tool
+// that moves this file between here and GitHub - one that gets it wrong turns the regex into a
+// SyntaxError and the worker will not boot. This spelling is plain ASCII with no backslash in it, so
+// there is nothing left to mangle.
+const COMBINING_MARKS = new RegExp(
+  '[' + String.fromCharCode(0x0300) + '-' + String.fromCharCode(0x036f) + ']',
+  'g'
+);
+
 // The name the browser saves the file under. On disk a clip is just "<jobId>.mp4", which is fine on
 // this machine and useless in a phone's downloads folder next to twenty other numbered files — so the
 // caller may ask for a readable name instead. It is only ever a label: the file actually served is
@@ -292,12 +303,8 @@ function safeDownloadName(raw, fallback) {
   const cleaned = String(raw || '')
     // Pull accents off their letters first, so "Pokémon" becomes "Pokemon" rather than "Pokmon" when
     // the stripping below runs. Stream titles are full of accents, emoji and decoration.
-    //
-    // \\p{M} rather than the combining-mark range written out: it means the same thing, and it keeps
-    // this line made of visible characters. The explicit range puts the marks themselves in the
-    // source, where they render as nothing and do not survive being copied around.
     .normalize('NFKD')
-    .replace(/\\p{M}+/gu, '')
+    .replace(COMBINING_MARKS, '')
     .replace(/\.mp4$/i, '')
     // Everything outside this set becomes a space, and runs of space collapse — so an emoji-heavy
     // title comes out readable instead of as a row of dashes.
