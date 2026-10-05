@@ -283,6 +283,27 @@ app.get('/status/:jobId', async (req, res) => {
   }
 });
 
+// The name the browser saves the file under. On disk a clip is just "<jobId>.mp4", which is fine on
+// this machine and useless in a phone's downloads folder next to twenty other numbered files — so the
+// caller may ask for a readable name instead. It is only ever a label: the file actually served is
+// still resolved from the URL's own path, so nothing here can reach a different file. Scrubbed hard
+// anyway, since this string ends up in a response header.
+function safeDownloadName(raw, fallback) {
+  const cleaned = String(raw || '')
+    // Pull accents off their letters first, so "Pokémon" becomes "Pokemon" rather than "Pokmon" when
+    // the stripping below runs. Stream titles are full of accents, emoji and decoration.
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\.mp4$/i, '')
+    // Everything outside this set becomes a space, and runs of space collapse — so an emoji-heavy
+    // title comes out readable instead of as a row of dashes.
+    .replace(/[^A-Za-z0-9 ._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+    .replace(/^[-. ]+|[-. ]+$/g, '');
+  return cleaned ? `${cleaned}.mp4` : fallback;
+}
+
 app.get('/clips/:file', (req, res) => {
   // Only ever serve <jobId>.mp4 out of the clips dir — never an arbitrary path.
   const name = path.basename(req.params.file);
@@ -293,7 +314,7 @@ app.get('/clips/:file', (req, res) => {
   if (!fs.existsSync(full)) {
     return res.status(404).json({ error: 'That clip is not available (it may have expired).' });
   }
-  res.download(full, name);
+  res.download(full, safeDownloadName(req.query.name, name));
 });
 // Trim a clip that's already been downloaded. Unlike a clip job this needs no network and no
 // queue: the source file is sitting in CLIPS_DIR and the cut is a stream copy, so it finishes in
